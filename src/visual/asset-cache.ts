@@ -12,15 +12,28 @@
 import { state } from '../state';
 import { readFile } from '../github';
 import { cacheFileInSW } from '../preview-sw-client';
-import { extractLinkedStylesheets, extractLinkedScripts, dirOf } from './inline-assets';
+import { getCachedFile } from '../repo-cache';
+import { extractLinkedStylesheets, extractLinkedScripts, extractImageUrls, dirOf } from './inline-assets';
 
 // ── Configuration ──────────────────────────────────────────────────────
 
 /** Hard cap: never issue more than this many GitHub API calls per page load. */
-const MAX_ASSETS_PER_PAGE = 80;
+const MAX_ASSETS_PER_PAGE = 200;
 
 /** Max concurrent GitHub API calls (avoids secondary rate-limit triggers). */
 const MAX_CONCURRENT = 8;
+
+/**
+ * Tracks which asset file paths have had their CONTENT fetched and SW-cached
+ * this session. Separate from state.fileShas, which is populated from the
+ * git tree (SHA-only, no content) and would make every file look "already done".
+ */
+const _contentCached = new Set<string>();
+
+/** Reset when the user connects to a different repo or branch. */
+export function resetAssetCache(): void {
+  _contentCached.clear();
+}
 
 // ── Semaphore ──────────────────────────────────────────────────────────
 
@@ -43,7 +56,7 @@ async function withConcurrencyLimit<T>(
   while (queue.length || active.length) {
     while (active.length < limit && queue.length) {
       const task = queue.shift()!;
-      const p = run(task).then(() => { active.splice(active.indexOf(p), 1); });
+      const p = run(task).then(() => { const i = active.indexOf(p); if (i !== -1) active.splice(i, 1); });
       active.push(p);
     }
     if (active.length) await Promise.race(active);
@@ -58,13 +71,20 @@ async function withConcurrencyLimit<T>(
 
 const CACHEABLE_EXTS = new Set([
   // Styles and scripts (MIME-type critical)
-  'css', 'js', 'mjs',
+  'css', 'js', 'mjs', 'cjs',
   // Fonts (often referenced by CSS @font-face)
   'woff', 'woff2', 'ttf', 'otf', 'eot',
-  // Images (SW serves with correct type even though raw.gh serves text/plain)
-  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'avif',
+  // Images
+  'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'avif', 'bmp',
+  // Video / audio (common in portfolio sites)
+  'mp4', 'webm', 'ogg', 'ogv', 'mov',
+  'mp3', 'wav', 'flac', 'm4a',
+  // Documents
+  'pdf',
   // Data
-  'json',
+  'json', 'xml',
+  // Maps (for source maps)
+  'map',
 ]);
 
 function isCacheable(path: string): boolean {
@@ -88,7 +108,7 @@ export async function preCacheLinkedAssets(
 ): Promise<void> {
   const dir = dirOf(pagePath);
 
-  // 1. Explicitly linked CSS and JS (highest priority — parse from HTML)
+  // 1. Explicitly linked CSS, JS, and images (highest priority — parse from HTML)
   const explicitCSS = extractLinkedStylesheets(htmlContent, pagePath)
     .filter(l => l.isRelative && l.repoPath)
     .map(l => l.repoPath!);
@@ -96,6 +116,9 @@ export async function preCacheLinkedAssets(
   const explicitJS = extractLinkedScripts(htmlContent, pagePath)
     .filter(s => s.isRelative && s.repoPath)
     .map(s => s.repoPath!);
+
+  // Extract <img src>, <img srcset>, <source src>, and CSS url() references
+  const explicitImages = extractImageUrls(htmlContent, pagePath);
 
   // 2. All cacheable assets in the same directory tree as the page
   //    (covers CSS background-image, @font-face, etc.)
@@ -110,8 +133,8 @@ export async function preCacheLinkedAssets(
     })
     .map(f => f.path);
 
-  // Merge, deduplicate, respect the cap
-  const toCache = [...new Set([...explicitCSS, ...explicitJS, ...sameDir])]
+  // Merge — explicit CSS/JS/images first (highest priority), then directory scan
+  const toCache = [...new Set([...explicitCSS, ...explicitJS, ...explicitImages, ...sameDir])]
     .filter(isCacheable)
     .slice(0, MAX_ASSETS_PER_PAGE);
 
@@ -121,11 +144,23 @@ export async function preCacheLinkedAssets(
   const tasks = toCache.map(assetPath => async () => {
     // Already have content in an open tab — just warm the SW
     const existing = state.openTabs.find(t => t.path === assetPath);
-    if (existing) { cacheFileInSW(assetPath, existing.content); return; }
+    if (existing) { cacheFileInSW(assetPath, existing.content); _contentCached.add(assetPath); return; }
+    if (_contentCached.has(assetPath)) return; // already fetched content this session
+
+    // Check IndexedDB before GitHub API
+    try {
+      const cached = await getCachedFile(state.owner, state.repo, state.branch, assetPath);
+      if (cached && cached.sha === state.fileShas[assetPath]) {
+        cacheFileInSW(assetPath, cached.content);
+        _contentCached.add(assetPath);
+        return;
+      }
+    } catch { /* IDB unavailable */ }
 
     const file = await readFile(assetPath);
     cacheFileInSW(assetPath, file.content);
     state.fileShas[assetPath] = file.sha;
+    _contentCached.add(assetPath);
   });
 
   await withConcurrencyLimit(tasks, MAX_CONCURRENT);
@@ -140,6 +175,7 @@ const SHARED_ASSET_DIRS = new Set([
   'fonts', 'font',
   'icons', 'icon',
   'media',
+  'lib', 'vendor', 'dist',  // common third-party / build-output directories
 ]);
 
 /**
@@ -157,14 +193,30 @@ export async function cacheEntireRepoTree(): Promise<void> {
 
   const tasks = allAssets.map(assetPath => async () => {
     const existing = state.openTabs.find(t => t.path === assetPath);
-    if (existing) { cacheFileInSW(assetPath, existing.content); return; }
-    if (state.fileShas[assetPath]) return; // already fetched this session
+    if (existing) { cacheFileInSW(assetPath, existing.content); _contentCached.add(assetPath); return; }
+    // Use _contentCached (not state.fileShas!) — fileShas is populated from the
+    // git tree before any content is loaded, so checking it would skip everything.
+    if (_contentCached.has(assetPath)) return;
+
+    // Check IndexedDB before GitHub API
+    try {
+      const cached = await getCachedFile(state.owner, state.repo, state.branch, assetPath);
+      if (cached && cached.sha === state.fileShas[assetPath]) {
+        cacheFileInSW(assetPath, cached.content);
+        _contentCached.add(assetPath);
+        return;
+      }
+    } catch { /* IDB unavailable */ }
 
     try {
       const file = await readFile(assetPath);
       cacheFileInSW(assetPath, file.content);
       state.fileShas[assetPath] = file.sha;
-    } catch { /* skip files that fail — SW falls back to on-demand */ }
+      _contentCached.add(assetPath);
+    } catch (err) {
+      // Log but don't throw — the SW will fall back to on-demand fetching
+      console.warn(`[asset-cache] Failed to cache ${assetPath}:`, err);
+    }
   });
 
   await withConcurrencyLimit(tasks, MAX_CONCURRENT);

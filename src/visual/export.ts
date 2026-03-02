@@ -3,6 +3,55 @@ import { renderBlock } from './blocks';
 import { escapeHtml } from '../utils';
 import { state } from '../state';
 
+// ── Section entrance animations ───────────────────────────────────────
+//
+// Nine popular patterns drawn from AOS, Animate.css and Framer Motion:
+//   fade-up · fade-down · fade-in-left · fade-in-right · fade-in
+//   zoom-in · zoom-out · flip-up · slide-up · blur-in
+//
+// Each animated block is wrapped in a <div data-wb-anim="…"> in the
+// published HTML.  CSS holds the hidden initial state; the tiny
+// IntersectionObserver script adds `.wb-anim-ready` on scroll-into-view,
+// triggering the CSS transition.  The editor canvas never sees these
+// wrappers — they are only emitted by generatePageHTML().
+
+const SECTION_ANIM_CSS = `html{overflow-x:hidden}
+[data-wb-anim]{display:block}
+[data-wb-anim]:not(.wb-anim-ready){opacity:0}
+[data-wb-anim="fade-up"]:not(.wb-anim-ready){transform:translateY(44px)}
+[data-wb-anim="fade-down"]:not(.wb-anim-ready){transform:translateY(-44px)}
+[data-wb-anim="fade-in-left"]:not(.wb-anim-ready){transform:translateX(-44px)}
+[data-wb-anim="fade-in-right"]:not(.wb-anim-ready){transform:translateX(44px)}
+[data-wb-anim="zoom-in"]:not(.wb-anim-ready){transform:scale(.88)}
+[data-wb-anim="zoom-out"]:not(.wb-anim-ready){transform:scale(1.12)}
+[data-wb-anim="flip-up"]:not(.wb-anim-ready){transform:perspective(800px) rotateX(20deg);transform-origin:top center}
+[data-wb-anim="slide-up"]:not(.wb-anim-ready){transform:translateY(80px)}
+[data-wb-anim="blur-in"]:not(.wb-anim-ready){filter:blur(14px)}
+[data-wb-anim].wb-anim-ready{opacity:1;transform:none;filter:none;transition:opacity var(--wb-dur,600ms) var(--wb-ease,ease),transform var(--wb-dur,600ms) var(--wb-ease,ease),filter var(--wb-dur,600ms) var(--wb-ease,ease);transition-delay:var(--wb-delay,0ms)}
+@media(prefers-reduced-motion:reduce){[data-wb-anim]{opacity:1!important;transform:none!important;filter:none!important;transition:none!important}}`;
+
+const SECTION_ANIM_SCRIPT = `<script>(function(){
+  if(!('IntersectionObserver' in window))return;
+  if(window.matchMedia('(prefers-reduced-motion:reduce)').matches){
+    document.querySelectorAll('[data-wb-anim]').forEach(function(el){el.classList.add('wb-anim-ready')});
+    return;
+  }
+  var obs=new IntersectionObserver(function(entries){
+    entries.forEach(function(e){if(e.isIntersecting){e.target.classList.add('wb-anim-ready');obs.unobserve(e.target)}});
+  },{threshold:0.08,rootMargin:'0px 0px -30px 0px'});
+  document.querySelectorAll('[data-wb-anim]').forEach(function(el){obs.observe(el)});
+})();</script>`;
+
+/** Wrap a block's rendered HTML with an entrance-animation container when animIn is set. */
+function animWrap(block: Block, html: string): string {
+  const anim = String(block.settings.animIn ?? '');
+  if (!anim || anim === 'none') return html;
+  const dur   = Number(block.settings.animDuration ?? 600);
+  const delay = Number(block.settings.animDelay    ?? 0);
+  const ease  = String(block.settings.animEasing   ?? 'ease');
+  return `<div data-wb-anim="${escapeHtml(anim)}" style="--wb-dur:${dur}ms;--wb-delay:${delay}ms;--wb-ease:${escapeHtml(ease)}">${html}</div>`;
+}
+
 // ── Shared page CSS ────────────────────────────────────────────────────
 
 const RESPONSIVE_NAV_CSS = `
@@ -41,6 +90,11 @@ function googleFontsUrl(theme: Theme): string {
   return `https://fonts.googleapis.com/css2?${params}&display=swap`;
 }
 
+/** Strip characters that could break a CSS string value (single-quote, backslash, null). */
+function safeCssString(s: string): string {
+  return s.replace(/['\\]/g, '').replace(/\0/g, '');
+}
+
 function themeCSS(theme: Theme): string {
   return `:root{
   --primary:${theme.primary};
@@ -49,8 +103,8 @@ function themeCSS(theme: Theme): string {
   --text-muted:${theme.textMuted};
   --bg:${theme.bg};
   --bg-alt:${theme.bgAlt};
-  --font-heading:'${theme.headingFont}',sans-serif;
-  --font-body:'${theme.bodyFont}',sans-serif;
+  --font-heading:'${safeCssString(theme.headingFont)}',sans-serif;
+  --font-body:'${safeCssString(theme.bodyFont)}',sans-serif;
   --radius:${theme.radius}px;
 }
 body{font-family:var(--font-body);color:var(--text);background:var(--bg)}`;
@@ -91,6 +145,74 @@ export const EDITING_CSS = `
 [data-wb-hovering]{outline:2px dashed rgba(99,102,241,.45)!important;outline-offset:3px}
 body.wb-inspect *{cursor:crosshair!important}
 body.wb-inspect [data-wb-hovering]{outline:2px solid rgba(37,99,235,.85)!important;outline-offset:2px;background:rgba(37,99,235,.06)!important}
+[data-wb-placeholder]:empty::before {
+  content: attr(data-wb-placeholder);
+  color: rgba(148,163,184,.5);
+  font-style: italic;
+  pointer-events: none;
+  display: block;
+}
+.wb-img-empty {
+  min-height: 80px;
+  border: 2px dashed rgba(99,102,241,.3)!important;
+  position: relative;
+}
+.wb-img-empty::after {
+  content: 'Drop an image here';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(99,102,241,.6);
+  font-size: 13px;
+  font-family: system-ui, sans-serif;
+  pointer-events: none;
+}
+body.wb-image-drag-over { outline: 3px dashed rgba(99,102,241,.5)!important; }
+body.wb-image-drag-over img { outline: 4px dashed rgba(99,102,241,.8)!important; outline-offset: 3px; }
+[data-drop-field].wb-drop-target { outline: 3px dashed rgba(99,102,241,.7)!important; outline-offset: 3px; }
+[data-drop-field].wb-drop-active { outline: 3px solid #6366f1!important; outline-offset: 3px; background: rgba(99,102,241,.08)!important; }
+body.wb-media-drag-over [data-drop-field] { outline: 2px dashed rgba(99,102,241,.4)!important; outline-offset: 2px; }
+.wb-block-drop-before::before {
+  content:''; display:block; height:4px; background:#6366f1; border-radius:2px;
+  margin:0 20px; box-shadow:0 0 8px rgba(99,102,241,.5);
+  animation:wb-drop-pulse .8s ease-in-out infinite alternate;
+}
+.wb-block-drop-after::after {
+  content:''; display:block; height:4px; background:#6366f1; border-radius:2px;
+  margin:0 20px; box-shadow:0 0 8px rgba(99,102,241,.5);
+  animation:wb-drop-pulse .8s ease-in-out infinite alternate;
+}
+@keyframes wb-drop-pulse { from{opacity:.6} to{opacity:1} }
+body.wb-block-drop-empty {
+  outline:3px dashed rgba(99,102,241,.5)!important; outline-offset:-3px;
+}
+body.wb-block-drop-empty::after {
+  content:'Drop element here'; display:flex; align-items:center; justify-content:center;
+  min-height:200px; color:rgba(99,102,241,.7); font-size:16px; font-weight:600;
+  font-family:system-ui,sans-serif;
+}
+/* ── Animation preview (fired by wb:replayAnim) ──────────────────────
+   Uses data-wb-anim-preview so it never clashes with published data-wb-anim.
+   CSS custom props --wb-anim-dur/delay/ease are set inline by the JS handler. */
+[data-wb-anim-preview]:not(.wb-anim-ready){opacity:0!important;outline:none!important}
+[data-wb-anim-preview="fade-up"]:not(.wb-anim-ready){transform:translateY(44px)}
+[data-wb-anim-preview="fade-down"]:not(.wb-anim-ready){transform:translateY(-44px)}
+[data-wb-anim-preview="fade-in-left"]:not(.wb-anim-ready){transform:translateX(-44px)}
+[data-wb-anim-preview="fade-in-right"]:not(.wb-anim-ready){transform:translateX(44px)}
+[data-wb-anim-preview="zoom-in"]:not(.wb-anim-ready){transform:scale(.88)}
+[data-wb-anim-preview="zoom-out"]:not(.wb-anim-ready){transform:scale(1.12)}
+[data-wb-anim-preview="flip-up"]:not(.wb-anim-ready){transform:perspective(800px) rotateX(20deg);transform-origin:top center}
+[data-wb-anim-preview="slide-up"]:not(.wb-anim-ready){transform:translateY(80px)}
+[data-wb-anim-preview="blur-in"]:not(.wb-anim-ready){filter:blur(14px)}
+[data-wb-anim-preview].wb-anim-ready{
+  opacity:1!important;transform:none!important;filter:none!important;
+  transition:opacity var(--wb-anim-dur,600ms) var(--wb-anim-ease,ease),
+             transform var(--wb-anim-dur,600ms) var(--wb-anim-ease,ease),
+             filter var(--wb-anim-dur,600ms) var(--wb-anim-ease,ease);
+  transition-delay:var(--wb-anim-delay,0ms);
+}
 `;
 
 /** Editing toolbar HTML injected at start of <body> */
@@ -258,6 +380,32 @@ if(!hasBlocks){
   }
   sendDomStructure();
 
+  // ── Content placeholders ────────────────────────────────────────────
+  (function addPlaceholders(){
+    var textSelectors = ['h1','h2','h3','h4','p','span','a']; // Use JS check instead of :has() (not universally supported)
+    textSelectors.forEach(function(sel){
+      document.querySelectorAll(sel).forEach(function(el){
+        // For spans: only add placeholder if the span has no child elements (pure text container)
+        if(sel==='span' && el.children.length>0) return;
+        if(!el.textContent.trim() && !el.dataset.wbPlaceholder) {
+          var tag = el.tagName.toLowerCase();
+          var hint = tag==='h1'?'Click to write your main heading'
+                   : tag==='h2'?'Click to write a subheading'
+                   : tag==='h3'||tag==='h4'?'Click to write a heading'
+                   : tag==='p'?'Click to write a paragraph'
+                   : tag==='a'?'Add link text'
+                   : 'Click to add text';
+          el.setAttribute('data-wb-placeholder', hint);
+        }
+      });
+    });
+    document.querySelectorAll('img').forEach(function(img){
+      if(!img.src || img.src.endsWith('#') || img.naturalWidth===0) {
+        img.classList.add('wb-img-empty');
+      }
+    });
+  })();
+
   // ── Shared helper: find which section-list index an element belongs to ─
   function getSectionIndexFor(el){
     var sectionIndex=-1;
@@ -311,6 +459,7 @@ if(!hasBlocks){
     if(target.id&&target.id.startsWith('wb-'))return;
     if(target.closest&&target.closest('[id^="wb-"]'))return;
     var cs=window.getComputedStyle(target);
+    if(inspectMode) showElemToolbar(target, cs);
     P.postMessage({
       type:'wb:elementSelect',
       selector:buildSelector(target),
@@ -338,6 +487,173 @@ if(!hasBlocks){
         display:cs.display
       }
     },'*');
+  });
+
+  // ── Helper: convert rgb() to hex ──────────────────────────────────────
+  function cssRgbToHex(rgb) {
+    if(!rgb||rgb==='transparent') return null;
+    var m = rgb.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+    if(!m) return null;
+    return '#' + [m[1],m[2],m[3]].map(function(n){ return (+n).toString(16).padStart(2,'0'); }).join('');
+  }
+
+  // ── Floating element toolbar (appears on click in inspect mode) ─────
+  var wbElemToolbar = null;
+  function removeElemToolbar(){
+    if(wbElemToolbar&&wbElemToolbar.parentNode) wbElemToolbar.parentNode.removeChild(wbElemToolbar);
+    wbElemToolbar = null;
+  }
+  function showElemToolbar(target, cs) {
+    removeElemToolbar();
+    var rect = target.getBoundingClientRect();
+    if(rect.width < 2 || rect.height < 2) return;
+    var toolbar = document.createElement('div');
+    toolbar.id = 'wb-elem-toolbar'; // ID ensures stripEditingArtifacts cleans it on save
+    toolbar.className = 'wb-elem-toolbar';
+    toolbar.style.cssText = 'position:fixed;z-index:10000;background:#1e293b;border:1px solid #334155;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.5);padding:4px 6px;display:flex;align-items:center;gap:4px;pointer-events:auto;font-family:system-ui,-apple-system,sans-serif';
+
+    var bgHex = cssRgbToHex(cs.backgroundColor)||'#ffffff';
+    var fgHex = cssRgbToHex(cs.color)||'#000000';
+    var sel   = buildSelector(target);
+
+    toolbar.innerHTML = [
+      '<label title="Background color" style="display:flex;align-items:center;gap:3px;cursor:pointer">',
+      '  <span style="font-size:10px;color:#94a3b8">BG</span>',
+      '  <input type="color" value="'+bgHex+'" style="width:22px;height:22px;border-radius:3px;border:1px solid #475569;cursor:pointer;padding:1px;background:none" class="wbet-bg-color">',
+      '</label>',
+      '<div style="width:1px;height:16px;background:#334155"></div>',
+      '<label title="Text color" style="display:flex;align-items:center;gap:3px;cursor:pointer">',
+      '  <span style="font-size:10px;color:#94a3b8">T</span>',
+      '  <input type="color" value="'+fgHex+'" style="width:22px;height:22px;border-radius:3px;border:1px solid #475569;cursor:pointer;padding:1px;background:none" class="wbet-fg-color">',
+      '</label>',
+      '<div style="width:1px;height:16px;background:#334155"></div>',
+      '<span style="font-size:10px;color:#94a3b8">Pad</span>',
+      '<input type="range" min="0" max="80" step="4" value="'+Math.round(parseFloat(cs.paddingTop))+'" style="width:60px;accent-color:#6366f1;cursor:pointer" class="wbet-padding">',
+      '<div style="width:1px;height:16px;background:#334155"></div>',
+      '<button title="Delete this section" style="width:26px;height:26px;border-radius:4px;border:none;background:none;color:#94a3b8;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .1s;font-size:14px" class="wbet-delete">X</button>',
+      '<button title="Close toolbar" style="width:22px;height:22px;border-radius:4px;border:none;background:none;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px" class="wbet-close">x</button>',
+    ].join('');
+
+    var toolbarH = 38;
+    var top = rect.top > toolbarH + 8 ? rect.top - toolbarH - 8 : rect.bottom + 4;
+    var left = Math.max(4, Math.min(rect.left, window.innerWidth - 300));
+    toolbar.style.top = top + 'px';
+    toolbar.style.left = left + 'px';
+    document.body.appendChild(toolbar);
+    wbElemToolbar = toolbar;
+
+    toolbar.querySelector('.wbet-bg-color').addEventListener('input', function(ev){
+      P.postMessage({ type:'wb:setInlineStyle', selector:sel, property:'background-color', value:ev.target.value }, '*');
+    });
+    toolbar.querySelector('.wbet-fg-color').addEventListener('input', function(ev){
+      P.postMessage({ type:'wb:setInlineStyle', selector:sel, property:'color', value:ev.target.value }, '*');
+    });
+    toolbar.querySelector('.wbet-padding').addEventListener('input', function(ev){
+      P.postMessage({ type:'wb:setInlineStyle', selector:sel, property:'padding', value:ev.target.value+'px' }, '*');
+    });
+    var delBtn = toolbar.querySelector('.wbet-delete');
+    delBtn.onmouseenter = function(){ delBtn.style.background='rgba(244,67,71,.2)'; delBtn.style.color='#f88'; };
+    delBtn.onmouseleave = function(){ delBtn.style.background=''; delBtn.style.color='#94a3b8'; };
+    delBtn.addEventListener('click', function(){
+      removeElemToolbar();
+      P.postMessage({ type:'wb:contextAction', action:'deleteSection', selector:sel }, '*');
+    });
+    var closeBtn = toolbar.querySelector('.wbet-close');
+    closeBtn.onmouseenter = function(){ closeBtn.style.color='#94a3b8'; };
+    closeBtn.onmouseleave = function(){ closeBtn.style.color='#64748b'; };
+    closeBtn.addEventListener('click', removeElemToolbar);
+  }
+
+  // ── Right-click context menu (inspect mode only) ────────────────────
+  var wbCtxMenu = null;
+  function removeCtxMenu(){
+    if(wbCtxMenu && wbCtxMenu.parentNode) wbCtxMenu.parentNode.removeChild(wbCtxMenu);
+    wbCtxMenu = null;
+  }
+  document.addEventListener('contextmenu', function(e){
+    if(!inspectMode) return;
+    e.preventDefault();
+    removeCtxMenu();
+    var target = e.target;
+    if(!target||!target.tagName) return;
+    var isImg = target.tagName==='IMG' || target.closest('img');
+    var menu = document.createElement('div');
+    menu.id = 'wb-ctx-menu'; // ID ensures stripEditingArtifacts cleans it on save
+    menu.className = 'wb-ctx-menu';
+    menu.style.cssText = 'position:fixed;z-index:10001;background:#1e293b;border:1px solid #334155;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.5);padding:4px;min-width:160px;font-family:system-ui,-apple-system,sans-serif';
+    menu.style.left = Math.min(e.clientX, window.innerWidth-170)+'px';
+    menu.style.top  = Math.min(e.clientY, window.innerHeight-200)+'px';
+    var items = [
+      { icon:'Edit', label:'Edit Text', action:'editText' },
+      { icon:'Paint', label:'Change Background', action:'changeBackground' },
+    ];
+    if(isImg) items.splice(1, 0, { icon:'Img', label:'Replace Image', action:'replaceImage' });
+    items.push({ sep: true });
+    items.push({ icon:'Copy', label:'Copy Section', action:'copySection' });
+    items.push({ icon:'Del', label:'Delete Section', action:'deleteSection' });
+    items.push({ sep: true });
+    items.push({ icon:'Find', label:'Inspect in Panel', action:'inspectPanel' });
+    items.forEach(function(item){
+      if(item.sep) {
+        var sep = document.createElement('div');
+        sep.style.cssText = 'height:1px;background:#334155;margin:3px 0';
+        menu.appendChild(sep); return;
+      }
+      var btn = document.createElement('div');
+      btn.style.cssText = 'padding:7px 10px;border-radius:4px;cursor:pointer;font-size:12px;color:#cbd5e1;display:flex;align-items:center;gap:8px;transition:background .1s';
+      btn.innerHTML = '<span style="font-size:10px;opacity:.7">'+item.icon+'</span><span>'+item.label+'</span>';
+      btn.onmouseenter = function(){btn.style.background='#334155'; btn.style.color='#e2e8f0';};
+      btn.onmouseleave = function(){btn.style.background=''; btn.style.color='#cbd5e1';};
+      btn.onclick = function(){
+        removeCtxMenu();
+        P.postMessage({ type:'wb:contextAction', action:item.action, selector:buildSelector(target), tagName:target.tagName.toLowerCase() }, '*');
+      };
+      menu.appendChild(btn);
+    });
+    document.body.appendChild(menu);
+    wbCtxMenu = menu;
+  });
+  document.addEventListener('click', function(){ removeCtxMenu(); });
+  document.addEventListener('scroll', function(){ removeCtxMenu(); }, true);
+
+  // ── Image drag/drop from OS ─────────────────────────────────────────
+  document.addEventListener('dragover', function(e){
+    if(!e.dataTransfer||!e.dataTransfer.types||!Array.prototype.includes.call(e.dataTransfer.types,'Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    document.body.classList.add('wb-image-drag-over');
+  });
+  document.addEventListener('dragleave', function(e){
+    if(!e.relatedTarget || e.relatedTarget===document.documentElement) {
+      document.body.classList.remove('wb-image-drag-over');
+    }
+  });
+  document.addEventListener('drop', function(e){
+    document.body.classList.remove('wb-image-drag-over');
+    if(!e.dataTransfer||!e.dataTransfer.files||!e.dataTransfer.files.length) return;
+    var file = e.dataTransfer.files[0];
+    if(!file||!file.type.startsWith('image/')) return;
+    e.preventDefault();
+    var nearestImg = null;
+    var minDist = Infinity;
+    document.querySelectorAll('img').forEach(function(img){
+      var r = img.getBoundingClientRect();
+      var cx = r.left+r.width/2; var cy = r.top+r.height/2;
+      var dist = Math.hypot(e.clientX-cx, e.clientY-cy);
+      if(dist < minDist){ minDist=dist; nearestImg=img; }
+    });
+    var reader = new FileReader();
+    reader.onload = function(ev){
+      var base64 = ev.target.result.split(',')[1];
+      P.postMessage({
+        type: 'wb:imageUpload',
+        base64: base64,
+        filename: file.name,
+        mimeType: file.type,
+        targetSelector: nearestImg ? buildSelector(nearestImg) : null
+      }, '*');
+    };
+    reader.readAsDataURL(file);
   });
 
   // ── Hover: notify parent + element-level highlight in inspect mode ───
@@ -448,6 +764,25 @@ if(!hasBlocks){
       document.body.classList.toggle('wb-inspect',inspectMode);
       if(!inspectMode){
         document.querySelectorAll('[data-wb-hovering]').forEach(function(hv){hv.removeAttribute('data-wb-hovering');});
+        removeElemToolbar();
+        removeCtxMenu();
+      }
+    }
+    if(d.type==='wb:duplicateSection'){
+      dmEl=document.querySelector(d.selector);
+      if(dmEl&&dmEl.parentNode){
+        var cloned=dmEl.cloneNode(true);
+        dmEl.parentNode.insertBefore(cloned,dmEl.nextSibling);
+        scheduleCapture();
+        sendDomStructure();
+      }
+    }
+    if(d.type==='wb:setImgSrc'){
+      var imgEl = d.selector ? document.querySelector(d.selector) : document.querySelector('img');
+      if(imgEl) {
+        imgEl.src = d.src;
+        imgEl.classList.remove('wb-img-empty');
+        scheduleCapture();
       }
     }
   });
@@ -515,6 +850,12 @@ if(!hasBlocks){
   function doEdit(field,bid){
     if(curField&&curField!==field)doEnd();
     curField=field;curBid=bid;
+    // Convert rendered markdown HTML back to raw syntax so the user edits
+    // **bold** / *italic* markers — innerText then saves them correctly.
+    var h=field.innerHTML;
+    h=h.replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**');
+    h=h.replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*');
+    field.innerHTML=h;
     field.contentEditable='true';field.focus();
     var r=document.createRange();r.selectNodeContents(field);
     var s=window.getSelection();if(s){s.removeAllRanges();s.addRange(r);}
@@ -543,8 +884,48 @@ if(!hasBlocks){
   }
   window.addEventListener('message',function(e){
     if(!e.data)return;
-    if(e.data.type==='wb:select')doSel(e.data.id);
+    if(e.data.type==='wb:select'){
+      // Highlight the block without echoing wb:select back to the parent.
+      // doSel() echoes, which causes a round-trip that flashes the properties panel.
+      // User-initiated clicks call doSel() directly and correctly echo to the parent.
+      document.querySelectorAll('[data-block-id].wb-sel').forEach(function(b){b.classList.remove('wb-sel');});
+      var selEl=document.querySelector('[data-block-id="'+e.data.id+'"]');
+      if(selEl)selEl.classList.add('wb-sel');
+    }
     if(e.data.type==='wb:deselect')doDeSel();
+    if(e.data.type==='wb:replayAnim'){
+      var animEl=document.querySelector('[data-block-id="'+e.data.blockId+'"]');
+      if(!animEl||!e.data.animIn||e.data.animIn==='none')return;
+      var animDur=Number(e.data.duration)||600;
+      var animDelay=Number(e.data.delay)||0;
+      var animEase=e.data.ease||'ease';
+      // Cancel any in-progress preview first
+      animEl.removeAttribute('data-wb-anim-preview');
+      animEl.classList.remove('wb-anim-ready');
+      animEl.style.removeProperty('--wb-anim-dur');
+      animEl.style.removeProperty('--wb-anim-delay');
+      animEl.style.removeProperty('--wb-anim-ease');
+      // Scroll block into view before playing
+      animEl.scrollIntoView({behavior:'smooth',block:'center'});
+      // Set CSS custom props, then attach the initial-state attribute
+      animEl.style.setProperty('--wb-anim-dur',animDur+'ms');
+      animEl.style.setProperty('--wb-anim-delay',animDelay+'ms');
+      animEl.style.setProperty('--wb-anim-ease',animEase);
+      animEl.setAttribute('data-wb-anim-preview',e.data.animIn);
+      // Two rAFs: first forces a style recalc, second starts the transition
+      requestAnimationFrame(function(){
+        requestAnimationFrame(function(){
+          animEl.classList.add('wb-anim-ready');
+          setTimeout(function(){
+            animEl.removeAttribute('data-wb-anim-preview');
+            animEl.classList.remove('wb-anim-ready');
+            animEl.style.removeProperty('--wb-anim-dur');
+            animEl.style.removeProperty('--wb-anim-delay');
+            animEl.style.removeProperty('--wb-anim-ease');
+          },animDur+animDelay+350);
+        });
+      });
+    }
   });
   document.addEventListener('keydown',function(e){if(e.key==='Escape'){doEnd();endCustomEdit();}});
 }
@@ -653,8 +1034,11 @@ function buildPageHTML(
   editing: boolean,
 ): string {
   const total     = page.blocks.length;
+  const hasAnims  = !editing && page.blocks.some(
+    b => b.settings.animIn && b.settings.animIn !== 'none',
+  );
   const blocksHtml = page.blocks.map((b, idx) =>
-    editing ? editingBlockWrapper(b, theme, idx, total) : renderBlock(b, theme, false),
+    editing ? editingBlockWrapper(b, theme, idx, total) : animWrap(b, renderBlock(b, theme, false)),
   ).join('\n');
 
   const editingStyles = editing ? `<style id="${WB_STYLE_ID}">${EDITING_CSS}</style>` : '';
@@ -665,7 +1049,7 @@ function buildPageHTML(
   // so the user's CSS links, meta tags, favicon, etc. survive unchanged.
   if (page.preservedHead) {
     // Inject editing layer into the preserved head when in editing mode
-    const headExtra = editingStyles;
+    const headExtra = editingStyles + (hasAnims ? `<style>${SECTION_ANIM_CSS}</style>` : '');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -675,6 +1059,7 @@ ${headExtra}
 <body>
 ${blocksHtml}
 ${editingBody}
+${hasAnims ? SECTION_ANIM_SCRIPT : ''}
 </body>
 </html>`;
   }
@@ -706,6 +1091,7 @@ ${editingStyles}
 ${UTILITY_CSS}
 ${RESPONSIVE_NAV_CSS}
 ${themeCSS(theme)}
+${hasAnims ? SECTION_ANIM_CSS : ''}
 </style>
 <base href="${base}">
 </head>
@@ -713,6 +1099,7 @@ ${themeCSS(theme)}
 ${emptyPlaceholder}${blocksHtml}
 ${editingBody}
 ${NAV_SCRIPT}
+${hasAnims ? SECTION_ANIM_SCRIPT : ''}
 </body>
 </html>`;
 }

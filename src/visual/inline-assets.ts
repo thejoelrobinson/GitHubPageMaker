@@ -205,6 +205,42 @@ export function substituteCssImport(
   return html.replace(cssImport.rule, replacement);
 }
 
+// ── Image URL extraction ──────────────────────────────────────────────
+
+/**
+ * Extract all relative image/media URLs from an HTML string:
+ * <img src>, <img srcset>, <video src>, <source src/srcset>,
+ * and CSS url() references inside <style> blocks.
+ * Returns deduplicated repo-relative paths.
+ */
+export function extractImageUrls(html: string, pagePath: string): string[] {
+  const dir = dirOf(pagePath);
+  const paths = new Set<string>();
+
+  const add = (href: string) => {
+    if (!href || /^(https?:)?\/\/|^data:|^#/i.test(href)) return;
+    paths.add(resolveRelativePath(dir, href.trim()));
+  };
+
+  // <img src="...">
+  for (const m of html.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) add(m[1]);
+
+  // <img srcset="url 1x, url 2x">  /  <source srcset="...">
+  for (const m of html.matchAll(/\bsrcset=["']([^"']+)["']/gi)) {
+    for (const entry of m[1].split(',')) add(entry.trim().split(/\s+/)[0] ?? '');
+  }
+
+  // <video src>, <source src>, <audio src>
+  for (const m of html.matchAll(/<(?:video|audio|source)\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)) add(m[1]);
+
+  // CSS url() inside <style> blocks (catches background-image, @font-face, etc.)
+  for (const styleM of html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) {
+    for (const urlM of styleM[1].matchAll(/url\(\s*["']?([^"')]+)["']?\s*\)/gi)) add(urlM[1]);
+  }
+
+  return [...paths];
+}
+
 // ── Fetch interface (injected so tests can mock it) ───────────────────
 
 export type FetchFileFn = (path: string) => Promise<string>;

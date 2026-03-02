@@ -23,6 +23,9 @@ export interface Block {
   type: string;
   content: BlockContent;
   settings: BlockSettings;
+  /** Setting keys (e.g. "logoColor") explicitly unlinked from the global theme.
+   *  Unlinked settings are skipped when a Look is applied. */
+  unlinked?: string[];
 }
 
 export interface Page {
@@ -49,10 +52,12 @@ export interface VisualProjectState {
 
 export interface Tab {
   path: string;
-  content: string;
+  content: string;       // text content OR raw base64 for binary
   sha: string;
   dirty: boolean;
   language: string;
+  isBinary?: boolean;    // true = content is raw base64
+  isLocalImport?: boolean; // true = file imported from local device
 }
 
 export interface TreeItem {

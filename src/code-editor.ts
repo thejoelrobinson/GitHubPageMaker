@@ -1,12 +1,102 @@
 import * as monaco from 'monaco-editor';
-import { state } from './state';
-import { ghFetch, encodeBase64, decodeBase64 } from './github';
+import { state, visual } from './state';
+import { ghFetch, encodeBase64, decodeBase64, encodeRepoPath } from './github';
 import { notify } from './ui/notifications';
 import { setStatusSync, updateStatusLang, updateSaveButton } from './ui/status';
 import { detectLanguage, escapeHtml, escapeAttr, fileIconSvg, cacheTreeShas } from './utils';
 import { markUnsaved, debounceAutoSave } from './draft';
 import { cacheFileInSW } from './preview-sw-client';
 import type { Tab } from './types';
+
+// ── Previewable file detection ────────────────────────────────────────
+const PREVIEW_IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','svg','webp','ico','avif','bmp']);
+const PREVIEW_VIDEO_EXTS = new Set(['mp4','webm','ogv','mov']);
+const PREVIEW_AUDIO_EXTS = new Set(['mp3','wav','ogg','flac','m4a']);
+
+/** Returns 'image', 'video', 'audio', or null */
+export function isPreviewable(path: string): 'image' | 'video' | 'audio' | null {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (PREVIEW_IMAGE_EXTS.has(ext)) return 'image';
+  if (PREVIEW_VIDEO_EXTS.has(ext)) return 'video';
+  if (PREVIEW_AUDIO_EXTS.has(ext)) return 'audio';
+  return null;
+}
+
+const PREVIEW_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  svg: 'image/svg+xml', webp: 'image/webp', ico: 'image/x-icon',
+  avif: 'image/avif', bmp: 'image/bmp',
+  mp4: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg', mov: 'video/quicktime',
+  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4',
+};
+
+/** Track blob URLs so we can revoke old ones and avoid leaks. */
+const _previewBlobUrls = new Map<string, string>();
+
+/** Dedup in-flight blob loads — prevents concurrent loads for the same path
+ *  from revoking each other's blob URLs mid-load. */
+const _previewLoading = new Map<string, Promise<string>>();
+
+/**
+ * Load a binary file from IDB cache or GitHub API and return a blob: URL
+ * suitable for <img>/<video>/<audio> src in the main page.
+ * Deduplicates concurrent calls for the same path.
+ */
+export async function loadPreviewBlobUrl(path: string): Promise<string> {
+  const inflight = _previewLoading.get(path);
+  if (inflight) return inflight;
+
+  const promise = _loadPreviewBlobUrlInner(path).finally(() => {
+    _previewLoading.delete(path);
+  });
+  _previewLoading.set(path, promise);
+  return promise;
+}
+
+async function _loadPreviewBlobUrlInner(path: string): Promise<string> {
+  // Revoke previous blob URL for this path
+  const prev = _previewBlobUrls.get(path);
+  if (prev) URL.revokeObjectURL(prev);
+
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  const mime = PREVIEW_MIME[ext] ?? 'application/octet-stream';
+
+  // 0. Local import with base64 content already in memory — no fetch needed
+  const localTab = state.openTabs.find(t => t.path === path && t.isBinary && t.isLocalImport);
+  if (localTab) {
+    const bytes = Uint8Array.from(atob(localTab.content), c => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    _previewBlobUrls.set(path, url);
+    return url;
+  }
+
+  // 1. Try IndexedDB cache (background sync likely already cached it)
+  try {
+    const { getCachedFile } = await import('./repo-cache');
+    const cached = await getCachedFile(state.owner, state.repo, state.branch, path);
+    if (cached?.content != null) {
+      // Text files (SVG, etc.) are stored as UTF-8 strings — use TextEncoder
+      // to preserve multi-byte characters. Binary files were decoded with
+      // atob() and are safe for charCodeAt-based conversion.
+      const bytes = cached.isText
+        ? new TextEncoder().encode(cached.content)
+        : Uint8Array.from(cached.content, c => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      _previewBlobUrls.set(path, url);
+      return url;
+    }
+  } catch { /* IDB unavailable */ }
+
+  // 2. Fetch raw binary from GitHub API
+  const res = await fetch(
+    `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}?ref=${state.branch}`,
+    { headers: { Authorization: `Bearer ${state.token}`, Accept: 'application/vnd.github.raw+json' } },
+  );
+  if (!res.ok) throw new Error(`Failed to load ${path}: ${res.status}`);
+  const url = URL.createObjectURL(new Blob([await res.arrayBuffer()], { type: mime }));
+  _previewBlobUrls.set(path, url);
+  return url;
+}
 
 // ── Monaco setup ──────────────────────────────────────────────────────
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -23,7 +113,91 @@ function debouncedCacheSW(path: string, content: string): void {
     cacheFileInSW(path, content);
   }, 500));
 }
+
+/** Cancel all pending debounced SW cache writes.
+ *  Call before mode switches (where we immediately re-cache all tabs)
+ *  or branch switches (where we wipe the entire SW cache). */
+export function flushSWCacheTimers(): void {
+  for (const timer of _swCacheTimers.values()) clearTimeout(timer);
+  _swCacheTimers.clear();
+}
+
 const treeOpenDirs = new Set<string>();
+
+// ── Sidebar file preview ──────────────────────────────────────────────
+let _sidebarPreviewPath: string | null = null;
+
+const FILE_TYPE_LABELS: Record<string, string> = {
+  html: 'HTML Document', css: 'CSS Stylesheet', js: 'JavaScript',
+  ts: 'TypeScript', json: 'JSON', md: 'Markdown', svg: 'SVG Image',
+  png: 'PNG Image', jpg: 'JPEG Image', jpeg: 'JPEG Image', gif: 'GIF Image',
+  webp: 'WebP Image', ico: 'Icon', avif: 'AVIF Image', bmp: 'Bitmap Image',
+  mp4: 'MP4 Video', webm: 'WebM Video', ogv: 'Ogg Video', mov: 'QuickTime Video',
+  mp3: 'MP3 Audio', wav: 'WAV Audio', ogg: 'Ogg Audio', flac: 'FLAC Audio',
+  m4a: 'M4A Audio', txt: 'Text File', xml: 'XML Document', yaml: 'YAML',
+  yml: 'YAML', toml: 'TOML', sh: 'Shell Script', py: 'Python',
+};
+
+export function showSidebarPreview(path: string): void {
+  _sidebarPreviewPath = path;
+  const panel = document.getElementById('sidebar-preview')!;
+  const nameEl = document.getElementById('sidebar-preview-name')!;
+  const contentEl = document.getElementById('sidebar-preview-content')!;
+
+  panel.classList.remove('hidden');
+  const fileName = path.split('/').pop() ?? path;
+  nameEl.textContent = fileName;
+
+  // Highlight in tree
+  document.querySelectorAll<HTMLElement>('.tree-item.previewing').forEach(el => el.classList.remove('previewing'));
+  document.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(path)}"]`)?.classList.add('previewing');
+
+  const previewType = isPreviewable(path);
+  if (previewType) {
+    contentEl.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">Loading\u2026</span>';
+    loadPreviewBlobUrl(path).then(blobUrl => {
+      if (_sidebarPreviewPath !== path) return;
+      if (previewType === 'image') {
+        contentEl.innerHTML = `<img src="${blobUrl}" alt="${escapeAttr(fileName)}">`;
+      } else if (previewType === 'video') {
+        contentEl.innerHTML = `<video src="${blobUrl}" controls></video>`;
+      } else {
+        contentEl.innerHTML = `<audio src="${blobUrl}" controls></audio>`;
+      }
+      // Make sidebar preview image/video draggable onto the canvas
+      if (previewType === 'image' || previewType === 'video') {
+        const mediaEl = contentEl.querySelector('img, video') as HTMLElement | null;
+        if (mediaEl) {
+          (mediaEl as HTMLImageElement | HTMLVideoElement).draggable = true;
+          mediaEl.addEventListener('dragstart', (ev) => {
+            (ev as DragEvent).dataTransfer!.setData('application/x-wb-asset', JSON.stringify({ path, type: previewType }));
+            (ev as DragEvent).dataTransfer!.effectAllowed = 'copy';
+          });
+        }
+      }
+    }).catch(() => {
+      if (_sidebarPreviewPath !== path) return;
+      contentEl.innerHTML = `<span style="font-size:11px;color:var(--red)">Failed to load</span>`;
+    });
+  } else {
+    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
+    const label = FILE_TYPE_LABELS[ext] ?? (ext ? ext.toUpperCase() + ' File' : 'File');
+    contentEl.innerHTML = `<div class="sp-file-info">${fileIconSvg(fileName)}<span>${escapeHtml(fileName)}</span><span class="sp-file-type">${escapeHtml(label)}</span></div>`;
+  }
+}
+
+export function hideSidebarPreview(): void {
+  document.getElementById('sidebar-preview')!.classList.add('hidden');
+  document.querySelectorAll<HTMLElement>('.tree-item.previewing').forEach(el => el.classList.remove('previewing'));
+  _sidebarPreviewPath = null;
+}
+
+function initSidebarPreview(): void {
+  document.getElementById('sidebar-preview-close')!.onclick = () => hideSidebarPreview();
+  document.getElementById('sidebar-preview-open')!.onclick = () => {
+    if (_sidebarPreviewPath) openFile(_sidebarPreviewPath);
+  };
+}
 
 export function initMonaco(): void {
   editor = monaco.editor.create(document.getElementById('editor') as HTMLElement, {
@@ -81,6 +255,8 @@ export function initMonaco(): void {
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
     if (state.connected) openCommitModal();
   });
+
+  initSidebarPreview();
 }
 
 // ── Open a generated file from visual mode ────────────────────────────
@@ -147,6 +323,7 @@ function renderNodes(container: HTMLElement, nodes: TreeNode[], depth: number, d
   nodes.forEach(node => {
     const el = document.createElement('div');
     el.className = 'tree-item' + (state.activeTab === node.path ? ' selected' : '');
+    el.dataset.path = node.path;
     el.style.paddingLeft = `${depth * 12 + (node.type === 'file' ? 18 : 6)}px`;
 
     if (node.type === 'dir') {
@@ -167,15 +344,48 @@ function renderNodes(container: HTMLElement, nodes: TreeNode[], depth: number, d
       };
       container.appendChild(el);
       if (isOpen) {
-        const children = dirs.get(node.path) ?? [];
-        renderNodes(container, children, depth + 1, dirs);
+        const fileChildren = (dirs.get(node.path) ?? []) as TreeNode[];
+        // Find subdirectories that are immediate children of this directory
+        const subDirs: TreeNode[] = [];
+        for (const [dirPath] of dirs) {
+          const parent = dirPath.slice(0, dirPath.lastIndexOf('/'));
+          if (parent === node.path) {
+            subDirs.push({ type: 'dir', name: dirPath.split('/').pop()!, path: dirPath });
+          }
+        }
+        renderNodes(container, [...subDirs, ...fileChildren], depth + 1, dirs);
       }
     } else {
-      el.innerHTML = `${fileIconSvg(node.name)}<span class="tree-item-name">${escapeHtml(node.name)}</span>`;
-      el.onclick = () => openFile(node.path);
+      const isNew = state.openTabs.some(t => t.path === node.path && t.isLocalImport && t.dirty);
+      el.innerHTML = `${fileIconSvg(node.name)}<span class="tree-item-name">${escapeHtml(node.name)}</span>${isNew ? '<span class="tree-new-badge">new</span>' : ''}`;
+      const mediaType = isPreviewable(node.path);
+      if (mediaType === 'image' || mediaType === 'video') {
+        el.draggable = true;
+        el.addEventListener('dragstart', (ev) => {
+          ev.dataTransfer!.setData('application/x-wb-asset', JSON.stringify({ path: node.path, type: mediaType }));
+          ev.dataTransfer!.effectAllowed = 'copy';
+        });
+      }
+      el.onclick = () => {
+        showSidebarPreview(node.path);
+        if (visual.mode !== 'visual') {
+          openFile(node.path);
+        }
+      };
       container.appendChild(el);
     }
   });
+}
+
+/** Lightweight selection update — toggles .selected on tree items
+ *  without rebuilding the entire tree DOM. */
+function updateTreeSelection(): void {
+  const container = document.getElementById('file-tree');
+  if (!container) return;
+  container.querySelectorAll<HTMLElement>('.tree-item.selected').forEach(el => el.classList.remove('selected'));
+  if (state.activeTab) {
+    container.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(state.activeTab)}"]`)?.classList.add('selected');
+  }
 }
 
 export function collapseAll(): void {
@@ -201,18 +411,50 @@ export async function refreshTree(): Promise<void> {
 // ── Open file ─────────────────────────────────────────────────────────
 
 export async function openFile(path: string): Promise<void> {
+  // If in visual mode, switch to code mode so #code-area becomes visible
+  if (visual.mode === 'visual') {
+    const { enterCodeMode } = await import('./visual/index');
+    enterCodeMode();
+  }
+
   const existing = state.openTabs.find(t => t.path === path);
   if (existing) { activateTab(path); return; }
 
+  // Previewable files (images, video, audio) — no content fetch needed
+  const previewType = isPreviewable(path);
+  if (previewType) {
+    const tab: Tab = { path, content: '', sha: state.fileShas[path] ?? '', dirty: false, language: 'preview' };
+    state.openTabs.push(tab);
+    activateTab(path);
+    return;
+  }
+
   setStatusSync('Loading...');
   try {
-    const data = await ghFetch<{ content: string; sha: string }>(
-      `/repos/${state.owner}/${state.repo}/contents/${encodeURIComponent(path)}?ref=${state.branch}`
-    );
-    const content = decodeBase64(data.content);
-    const tab: Tab = { path, content, sha: data.sha, dirty: false, language: detectLanguage(path) };
+    let content: string | undefined;
+    let sha: string | undefined;
+
+    // Try IndexedDB first (instant, no network)
+    try {
+      const { getCachedFile } = await import('./repo-cache');
+      const cached = await getCachedFile(state.owner, state.repo, state.branch, path);
+      if (cached && cached.sha === state.fileShas[path]) {
+        content = cached.content;
+        sha = cached.sha;
+      }
+    } catch { /* IDB unavailable — fall through to API */ }
+
+    if (!content) {
+      const data = await ghFetch<{ content: string; sha: string }>(
+        `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}?ref=${state.branch}`
+      );
+      content = decodeBase64(data.content);
+      sha = data.sha;
+    }
+
+    const tab: Tab = { path, content, sha: sha!, dirty: false, language: detectLanguage(path) };
     state.openTabs.push(tab);
-    state.fileShas[path] = data.sha;
+    state.fileShas[path] = sha!;
     activateTab(path);
     setStatusSync('Synced');
   } catch (e) {
@@ -224,21 +466,63 @@ export async function openFile(path: string): Promise<void> {
 export function activateTab(path: string): void {
   state.activeTab = path;
   const tab = state.openTabs.find(t => t.path === path);
-  if (!tab || !editor) return;
+  if (!tab) return;
+
+  const editorEl   = document.getElementById('editor') as HTMLElement;
+  const welcomeEl  = document.getElementById('welcome') as HTMLElement;
+  const breadcrumb = document.getElementById('breadcrumb') as HTMLElement;
+  const previewEl  = document.getElementById('file-preview') as HTMLElement;
+
+  const previewType = isPreviewable(path);
+  if (previewType) {
+    // Show preview panel, hide Monaco
+    editorEl.style.display   = 'none';
+    welcomeEl.style.display  = 'none';
+    previewEl.style.display  = 'flex';
+    breadcrumb.style.display = 'flex';
+
+    const fileName = path.split('/').pop() ?? path;
+    const contentEl = document.getElementById('preview-content') as HTMLElement;
+
+    // Show loading state, then async-load the blob URL
+    const mediaTag = previewType === 'image' ? 'img' : previewType === 'video' ? 'video' : 'audio';
+    const audioIcon = previewType === 'audio'
+      ? '<svg class="preview-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48"><path stroke-linecap="round" stroke-linejoin="round" d="m9 9 10.5-3m0 6.553v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 1 1-.99-3.467l2.31-.66a2.25 2.25 0 0 0 1.632-2.163Zm0 0V4.125c0-.621-.504-1.125-1.125-1.125H14.25M3.75 21V18.75c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3.75 21h4.5M3.75 21h-1.5m6-3v3m0 0h1.5"/></svg>'
+      : '';
+    const controls = mediaTag !== 'img' ? ' controls' : '';
+
+    contentEl.innerHTML = `${audioIcon}<span class="preview-filename">${escapeHtml(fileName)}</span><span class="preview-filename" style="font-size:11px">Loading…</span>`;
+
+    loadPreviewBlobUrl(path).then(blobUrl => {
+      // Only update if this path is still the active tab
+      if (state.activeTab !== path) return;
+      contentEl.innerHTML = `${audioIcon}<${mediaTag} src="${blobUrl}" alt="${escapeAttr(fileName)}"${controls}></${mediaTag}><span class="preview-filename">${escapeHtml(fileName)}</span>`;
+    }).catch(() => {
+      if (state.activeTab !== path) return;
+      contentEl.innerHTML = `<span class="preview-filename" style="color:var(--red)">Failed to load ${escapeHtml(fileName)}</span>`;
+    });
+
+    updateBreadcrumb(path);
+    updateStatusLang('preview');
+    renderTabs();
+    updateTreeSelection();
+    updateSaveButton(state.openTabs);
+    return;
+  }
+
+  // Code file — hide preview, show Monaco
+  if (!editor) return;
+  previewEl.style.display = 'none';
 
   suppressChange = true;
   let model = monaco.editor.getModels().find(m => m.uri.path === '/' + path);
   if (!model) {
-    // First time opening this file — create a fresh model seeded with tab.content.
     model = monaco.editor.createModel(
       tab.content,
       tab.language,
       monaco.Uri.parse('inmemory://model/' + path)
     );
   } else {
-    // Model already exists but may be stale: syncCodeTab / openGeneratedFile may
-    // have updated tab.content since the model was last set.  Always sync the
-    // model value so the editor shows what tab.content actually contains.
     if (model.getValue() !== tab.content) {
       model.setValue(tab.content);
     }
@@ -246,9 +530,6 @@ export function activateTab(path: string): void {
   editor.setModel(model);
   suppressChange = false;
 
-  const editorEl    = document.getElementById('editor') as HTMLElement;
-  const welcomeEl   = document.getElementById('welcome') as HTMLElement;
-  const breadcrumb  = document.getElementById('breadcrumb') as HTMLElement;
   editorEl.style.display   = 'block';
   welcomeEl.style.display  = 'none';
   breadcrumb.style.display = 'flex';
@@ -256,7 +537,7 @@ export function activateTab(path: string): void {
   updateBreadcrumb(path);
   updateStatusLang(tab.language);
   renderTabs();
-  renderTree();
+  updateTreeSelection();
   updateSaveButton(state.openTabs);
 }
 
@@ -291,8 +572,11 @@ export function closeTab(path: string): void {
   const tab = state.openTabs.find(t => t.path === path);
   if (tab?.dirty && !confirm(`"${path.split('/').pop()}" has unsaved changes. Close anyway?`)) return;
   state.openTabs = state.openTabs.filter(t => t.path !== path);
-  const model = monaco.editor.getModels().find(m => m.uri.path === '/' + path);
-  model?.dispose();
+  // Only dispose Monaco model for non-preview tabs
+  if (!isPreviewable(path)) {
+    const model = monaco.editor.getModels().find(m => m.uri.path === '/' + path);
+    model?.dispose();
+  }
   if (state.activeTab === path) {
     const last = state.openTabs[state.openTabs.length - 1];
     if (last) { activateTab(last.path); }
@@ -301,9 +585,11 @@ export function closeTab(path: string): void {
       const edEl = document.getElementById('editor') as HTMLElement;
       const welEl = document.getElementById('welcome') as HTMLElement;
       const bcEl = document.getElementById('breadcrumb') as HTMLElement;
+      const pvEl = document.getElementById('file-preview') as HTMLElement;
       edEl.style.display   = 'none';
       welEl.style.display  = 'flex';
       bcEl.style.display   = 'none';
+      pvEl.style.display   = 'none';
     }
   }
   renderTabs();
@@ -317,7 +603,11 @@ export function openCommitModal(): void {
   const dirty = state.openTabs.filter(t => t.dirty);
   if (!dirty.length) { notify('No unsaved changes to commit', 'warning'); return; }
   const list = document.getElementById('changed-files-list') as HTMLElement;
-  list.innerHTML = dirty.map(t => `<div class="changed-file"><span class="cf-status">M</span><span class="cf-path">${escapeHtml(t.path)}</span></div>`).join('');
+  list.innerHTML = dirty.map(t => {
+    const status = t.isLocalImport ? 'A' : 'M';
+    const statusColor = t.isLocalImport ? 'var(--green)' : 'var(--orange)';
+    return `<div class="changed-file"><span class="cf-status" style="color:${statusColor}">${status}</span><span class="cf-path">${escapeHtml(t.path)}</span></div>`;
+  }).join('');
   (document.getElementById('commit-message') as HTMLInputElement).value = 'Update website content';
   document.getElementById('commit-modal')?.classList.remove('hidden');
 }
@@ -336,7 +626,8 @@ export async function pushChanges(): Promise<void> {
   try {
     for (const tab of dirty) {
       try {
-        const content = encodeBase64(tab.content);
+        // Binary files already store raw base64; text files need encoding
+        const content = tab.isBinary ? tab.content : encodeBase64(tab.content);
         interface PushBody { message: string; content: string; branch: string; sha?: string; }
         const body: PushBody & object = {
           message: dirty.length === 1 ? message : `${message} (${tab.path.split('/').pop()})`,
@@ -345,13 +636,24 @@ export async function pushChanges(): Promise<void> {
         };
         if (tab.sha) body.sha = tab.sha;
         const res = await ghFetch<{ content: { sha: string } }>(
-          `/repos/${state.owner}/${state.repo}/contents/${encodeURIComponent(tab.path)}`,
+          `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(tab.path)}`,
           { method: 'PUT', body }
         );
         tab.sha = (res.content as { sha: string }).sha;
         state.fileShas[tab.path] = tab.sha;
         tab.dirty = false;
+        tab.isLocalImport = false;
         pushed++;
+        // Update IndexedDB cache with fresh content
+        const isText = !tab.isBinary;
+        import('./repo-cache').then(({ putCachedFile, cacheKey }) => {
+          putCachedFile({
+            id: cacheKey(state.owner, state.repo, state.branch, tab.path),
+            owner: state.owner, repo: state.repo, branch: state.branch,
+            path: tab.path, sha: tab.sha, content: tab.content,
+            isText, cachedAt: Date.now(),
+          });
+        }).catch(() => {});
       } catch (e) {
         notify(`Failed to push ${tab.path}: ` + (e as Error).message, 'error');
       }
@@ -419,12 +721,21 @@ export async function pullRepo(): Promise<void> {
     for (const tab of state.openTabs) {
       try {
         const data = await ghFetch<{ content: string; sha: string }>(
-          `/repos/${state.owner}/${state.repo}/contents/${encodeURIComponent(tab.path)}?ref=${state.branch}`
+          `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(tab.path)}?ref=${state.branch}`
         );
         tab.content = decodeBase64(data.content);
         tab.sha     = data.sha;
         tab.dirty   = false;
         state.fileShas[tab.path] = data.sha;
+        // Update IndexedDB cache
+        import('./repo-cache').then(({ putCachedFile, cacheKey }) => {
+          putCachedFile({
+            id: cacheKey(state.owner, state.repo, state.branch, tab.path),
+            owner: state.owner, repo: state.repo, branch: state.branch,
+            path: tab.path, sha: tab.sha, content: tab.content,
+            isText: true, cachedAt: Date.now(),
+          });
+        }).catch(() => {});
         if (tab.path === state.activeTab && editor) {
           suppressChange = true;
           editor.setValue(tab.content);

@@ -15,6 +15,22 @@ import CssWorker    from 'monaco-editor/esm/vs/language/css/css.worker?worker&in
 import HtmlWorker   from 'monaco-editor/esm/vs/language/html/html.worker?worker&inline';
 import TsWorker     from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker&inline';
 
+// Guard: Monaco's StandardKeyboardEvent constructor calls e.getModifierState()
+// which only exists on real KeyboardEvent instances. In Chromium, DragEvents
+// and PointerEvents can be incorrectly routed through keydown listeners (e.g.
+// when dragging files into the window or interacting with file-picker inputs).
+// This capture-phase listener runs before Monaco's body listener and stops any
+// event that lacks getModifierState so Monaco never sees it.
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (typeof (e as KeyboardEvent).getModifierState !== 'function') {
+      e.stopImmediatePropagation();
+    }
+  },
+  true, // capture phase — fires before Monaco's bubble-phase listener
+);
+
 window.MonacoEnvironment = {
   getWorker(_moduleId: string, label: string): Worker {
     if (label === 'json')                                    return new JsonWorker();

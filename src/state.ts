@@ -39,6 +39,7 @@ export interface VisualEditorState {
   siteName: string;
   siteDesc: string;
   pendingInsertAfterId: string | null;
+  pendingMediaDrop: { path: string; source: 'repo' | 'os'; base64?: string; filename?: string } | null;
 }
 
 export const visual: VisualEditorState = {
@@ -53,6 +54,7 @@ export const visual: VisualEditorState = {
   siteName: 'My Website',
   siteDesc: '',
   pendingInsertAfterId: null,
+  pendingMediaDrop: null,
 };
 
 // ── Persistence ───────────────────────────────────────────────────────
@@ -134,7 +136,7 @@ export function saveLocalDraft(): void {
     timestamp:    Date.now(),
     visualState:  toVisualProjectState(),
     dirtyTabs:    state.openTabs
-      .filter(t => t.dirty)
+      .filter(t => t.dirty && !t.isBinary)
       .map(t => ({ path: t.path, content: t.content, sha: t.sha })),
   };
   localStorage.setItem(draftKey(), JSON.stringify(draft));

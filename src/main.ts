@@ -1,26 +1,53 @@
 import './monaco-env'; // Must be first — sets MonacoEnvironment before any monaco import
 import './styles.css';
-import { state, visual, saveConfig, loadConfig, saveLastMode, loadLastMode } from './state';
+import { state, visual, saveConfig, loadConfig, saveLastMode, loadLastMode, clearLocalDraft } from './state';
 import {
   registerPreviewSW, configurePreviewSW, clearSWCache,
 } from './preview-sw-client';
 import { performLocalSave } from './draft';
 import { revertToBlocks } from './visual/canvas';
 import { switchSidebarPanel } from './visual/index';
-import { fetchTree, fetchBranches } from './github';
+import { fetchTree, fetchBranches, getAuthenticatedUser, createRepo } from './github';
+import { resetAssetCache } from './visual/asset-cache';
 import { notify } from './ui/notifications';
 import { setStatusSync } from './ui/status';
 import {
   initMonaco, renderTree, refreshTree,
   collapseAll, openCommitModal, pushChanges, searchFiles, pullRepo,
+  flushSWCacheTimers,
 } from './code-editor';
 import {
   enterVisualMode, enterCodeMode,
   openVisualCommitModal, pushVisualChanges,
 } from './visual/index';
-import { openAddPageModal, confirmAddPage } from './visual/pages';
+import { openAddPageModal, confirmAddPage, showAddPageForm } from './visual/pages';
 import { closeSectionPicker } from './visual/canvas';
 import { escapeHtml, cacheTreeShas, debounce } from './utils';
+import {
+  syncRepoToCache, showSyncProgress, updateSyncProgress,
+  hideSyncProgress, cancelSync, getSyncSignal,
+} from './repo-cache';
+
+// ── Repo sync (background) ────────────────────────────────────────────
+
+function runBackgroundSync(): void {
+  showSyncProgress();
+  syncRepoToCache(
+    state.owner, state.repo, state.branch,
+    state.tree,
+    updateSyncProgress,
+    getSyncSignal(),
+  ).then(stats => {
+    hideSyncProgress();
+    const changed = stats.added + stats.updated;
+    if (changed > 0) notify(`Synced ${changed} file${changed === 1 ? '' : 's'} to local cache`, 'info');
+  }).catch(err => {
+    hideSyncProgress();
+    if ((err as Error).name !== 'AbortError') {
+      console.warn('[repo-cache] Sync failed:', err);
+    }
+  });
+}
 
 // ── Connection ────────────────────────────────────────────────────────
 
@@ -41,7 +68,11 @@ async function connectRepo(): Promise<void> {
   btn.innerHTML = '<span class="spinner"></span> Connecting...';
   connecting = true;
 
+  // Clear stale asset state before connecting to a potentially different repo
+  clearSWCache();
+  resetAssetCache();
   state.token = token; state.owner = owner; state.repo = repo; state.branch = branch;
+  state.fileShas = {};
 
   try {
     const { entries: treeEntries, truncated: treeT } = await fetchTree();
@@ -55,6 +86,9 @@ async function connectRepo(): Promise<void> {
     hideWelcomeOverlay();
     showConnectedUI();
     notify(`Connected to ${owner}/${repo}`, 'success');
+
+    // Clone/sync repo files to IndexedDB (non-blocking background task)
+    runBackgroundSync();
 
     // Reset visual state so enterVisualMode triggers a fresh load from repo
     visual.pages       = [];
@@ -76,6 +110,55 @@ async function connectRepo(): Promise<void> {
     btn.disabled = false;
     btn.innerHTML = 'Connect';
     connecting = false;
+  }
+}
+
+// ── Create new repo + connect ─────────────────────────────────────────
+
+let creating = false;
+
+async function createAndConnectRepo(): Promise<void> {
+  if (creating) return;
+
+  const token  = (document.getElementById('input-token')    as HTMLInputElement).value.trim();
+  const name   = (document.getElementById('input-new-repo') as HTMLInputElement).value.trim();
+  const desc   = (document.getElementById('input-new-desc') as HTMLInputElement).value.trim();
+  const priv   = (document.getElementById('input-new-private') as HTMLInputElement).checked;
+
+  if (!token) { notify('Enter your Personal Access Token', 'warning'); return; }
+  if (!name)  { notify('Enter a repository name', 'warning'); return; }
+  if (!/^[\w.-]+$/.test(name)) { notify('Repo name can only use letters, numbers, - _ .', 'warning'); return; }
+
+  const btn = document.getElementById('create-repo-btn') as HTMLButtonElement;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Creating…';
+  creating = true;
+
+  state.token = token;
+
+  try {
+    const { login } = await getAuthenticatedUser();
+    const { defaultBranch } = await createRepo(name, desc, priv);
+
+    // Pre-fill the connect form so connectRepo() picks up the right values
+    (document.getElementById('input-owner')  as HTMLInputElement).value = login;
+    (document.getElementById('input-repo')   as HTMLInputElement).value = name;
+    (document.getElementById('input-branch') as HTMLInputElement).value = defaultBranch;
+
+    notify(`Repository "${login}/${name}" created! Connecting…`, 'success');
+    await connectRepo();
+  } catch (e) {
+    const msg = (e as Error).message;
+    const hint = /422/.test(msg)
+      ? `"${name}" already exists or the name is invalid.`
+      : /401|Bad credentials/i.test(msg)
+        ? 'Invalid token — check your PAT has repo scope.'
+        : msg;
+    notify('Create failed: ' + hint, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'Create &amp; Connect';
+    creating = false;
   }
 }
 
@@ -112,10 +195,75 @@ function showConnectedUI(): void {
   updateRepoLabel();
   renderTree();
   (document.getElementById('branch-badge') as HTMLElement).style.display = 'flex';
+  (document.getElementById('act-logout')   as HTMLElement).style.display = 'flex';
   setStatusSync(`Connected to ${state.owner}/${state.repo}`);
   loadBranches();
   // Give the service worker the repo credentials so it can fetch assets on demand
   configurePreviewSW(state);
+}
+
+// ── Logout / disconnect ───────────────────────────────────────────────
+
+function openLogoutModal(): void {
+  if (!state.connected) return;
+  const hasDirty = state.openTabs.some(t => t.dirty) ||
+                   visual.dirty ||
+                   visual.pages.some(p => p.dirty);
+  (document.getElementById('logout-unsaved-warning') as HTMLElement).style.display = hasDirty ? 'block' : 'none';
+  (document.getElementById('logout-repo-name') as HTMLElement).textContent = `${state.owner}/${state.repo}`;
+  openModal('logout-modal');
+}
+
+function logout(): void {
+  closeModal('logout-modal');
+
+  // Cancel any in-flight background work
+  cancelSync();
+  flushSWCacheTimers();
+
+  // Wipe all local caches and stored credentials
+  clearSWCache();
+  clearLocalDraft();
+  resetAssetCache();
+
+  // Reset app state
+  state.token     = '';
+  state.owner     = '';
+  state.repo      = '';
+  state.branch    = 'main';
+  state.connected = false;
+  state.tree      = [];
+  state.openTabs  = [];
+  state.activeTab = null;
+  state.fileShas  = {};
+  state.branches  = [];
+
+  // Reset visual editor state
+  visual.pages           = [];
+  visual.activePage      = null;
+  visual.selectedBlockId = null;
+  visual.dirty           = false;
+  visual.active          = false;
+  visual.mode            = 'visual';
+
+  // Persist cleared credentials so the app doesn't auto-connect on reload
+  saveConfig();
+
+  // Reset UI chrome
+  (document.getElementById('repo-label')   as HTMLElement).textContent = 'Connect Repository';
+  (document.getElementById('branch-badge') as HTMLElement).style.display = 'none';
+  (document.getElementById('act-logout')   as HTMLElement).style.display = 'none';
+  document.getElementById('vis-area')?.classList.add('hidden');
+  document.getElementById('code-area')?.classList.remove('hidden');
+
+  setStatusSync('Disconnected');
+  showWelcomeOverlay();
+  notify('Disconnected — local data cleared', 'info');
+
+  // Dispose Monaco models asynchronously — not critical for logout, just cleanup
+  import('monaco-editor').then(({ default: monaco }) => {
+    monaco.editor.getModels().forEach(m => m.dispose());
+  }).catch(() => { /* ignore — models will be replaced on next connect */ });
 }
 
 function updateRepoLabel(): void {
@@ -169,7 +317,9 @@ async function switchBranch(branch: string): Promise<void> {
   state.openTabs  = [];
   state.activeTab = null;
   state.fileShas  = {};
-  clearSWCache(); // wipe cached files from the previous branch
+  flushSWCacheTimers(); // cancel pending debounced writes before wiping the cache
+  clearSWCache();    // wipe cached files from the previous branch
+  resetAssetCache(); // reset the content-fetched tracker so cacheEntireRepoTree re-fetches
 
   const { default: monaco } = await import('monaco-editor');
   monaco.editor.getModels().forEach(m => m.dispose());
@@ -190,6 +340,9 @@ async function switchBranch(branch: string): Promise<void> {
     renderTree();
     notify(`Switched to "${branch}"`, 'success');
 
+    // Sync new branch files to cache
+    runBackgroundSync();
+
     // Reload visual state for the new branch if in visual mode
     if (visual.mode === 'visual') {
       visual.pages      = [];
@@ -208,11 +361,20 @@ async function switchBranch(branch: string): Promise<void> {
 function openModal(id: string): void  { document.getElementById(id)?.classList.remove('hidden'); }
 function closeModal(id: string): void { document.getElementById(id)?.classList.add('hidden'); }
 
-function openSettings(): void {
+function switchModalTab(tab: 'connect' | 'create'): void {
+  const isConnect = tab === 'connect';
+  (document.getElementById('modal-connect-section') as HTMLElement).style.display = isConnect ? 'block' : 'none';
+  (document.getElementById('modal-create-section')  as HTMLElement).style.display = isConnect ? 'none'  : 'block';
+  document.getElementById('tab-connect')?.classList.toggle('active', isConnect);
+  document.getElementById('tab-create')?.classList.toggle('active', !isConnect);
+}
+
+function openSettings(tab: 'connect' | 'create' = 'connect'): void {
   (document.getElementById('input-token')  as HTMLInputElement).value = state.token;
   (document.getElementById('input-owner')  as HTMLInputElement).value = state.owner;
   (document.getElementById('input-repo')   as HTMLInputElement).value = state.repo;
   (document.getElementById('input-branch') as HTMLInputElement).value = state.branch;
+  switchModalTab(tab);
   openModal('settings-modal');
 }
 
@@ -243,6 +405,9 @@ async function init(): Promise<void> {
       showConnectedUI();
       hideWelcomeOverlay();
 
+      // Background sync — only downloads files whose SHA changed since last session
+      runBackgroundSync();
+
       const lastMode = loadLastMode();
       if (lastMode === 'code') {
         enterCodeMode();
@@ -263,9 +428,13 @@ async function init(): Promise<void> {
 function bindEventListeners(): void {
   // Settings
   document.getElementById('connect-btn')?.addEventListener('click', connectRepo);
-  document.getElementById('repo-select')?.addEventListener('click', openSettings);
-  document.getElementById('overlay-connect-btn')?.addEventListener('click', openSettings);
-  document.getElementById('welcome-connect-btn')?.addEventListener('click', openSettings);
+  document.getElementById('create-repo-btn')?.addEventListener('click', createAndConnectRepo);
+  document.getElementById('tab-connect')?.addEventListener('click', () => switchModalTab('connect'));
+  document.getElementById('tab-create')?.addEventListener('click', () => switchModalTab('create'));
+  document.getElementById('repo-select')?.addEventListener('click', () => openSettings());
+  document.getElementById('overlay-connect-btn')?.addEventListener('click', () => openSettings('connect'));
+  document.getElementById('overlay-create-btn')?.addEventListener('click', () => openSettings('create'));
+  document.getElementById('welcome-connect-btn')?.addEventListener('click', () => openSettings());
 
   // Mode toggle — async because enterVisualMode may fetch from GitHub
   document.getElementById('mode-vis-btn')?.addEventListener('click', async () => {
@@ -310,7 +479,9 @@ function bindEventListeners(): void {
   document.getElementById('act-pages')?.addEventListener('click',    () => togglePanel('pages'));
   document.getElementById('act-explorer')?.addEventListener('click', () => togglePanel('explorer'));
   document.getElementById('act-search')?.addEventListener('click',   () => togglePanel('search'));
-  document.getElementById('act-settings')?.addEventListener('click', openSettings);
+  document.getElementById('act-settings')?.addEventListener('click', () => openSettings());
+  document.getElementById('act-logout')?.addEventListener('click', openLogoutModal);
+  document.getElementById('confirm-logout-btn')?.addEventListener('click', logout);
 
   // Search — debounced
   const debouncedSearch = debounce((q: unknown) => searchFiles(q as string), 200);
@@ -331,8 +502,32 @@ function bindEventListeners(): void {
   document.getElementById('vis-add-page-btn')?.addEventListener('click', openAddPageModal);
   document.getElementById('btn-confirm-add-page')?.addEventListener('click', confirmAddPage);
   document.getElementById('btn-cancel-add-page')?.addEventListener('click', () => closeModal('add-page-modal'));
+  document.getElementById('btn-add-page-blank')?.addEventListener('click', showAddPageForm);
+  document.getElementById('btn-add-page-template')?.addEventListener('click', () => {
+    closeModal('add-page-modal');
+    import('./visual/index').then(({ switchSidebarPanel: _ }) => {});
+    import('./visual/templates').then(({ showTemplateGallery }) => showTemplateGallery());
+  });
+  document.getElementById('btn-add-page-assets')?.addEventListener('click', () => {
+    closeModal('add-page-modal');
+    import('./visual/asset-wizard').then(({ openAssetWizard }) => openAssetWizard());
+  });
   document.getElementById('btn-close-picker')?.addEventListener('click', closeSectionPicker);
   document.getElementById('btn-revert-to-blocks')?.addEventListener('click', revertToBlocks);
+
+  // File import
+  document.getElementById('btn-import-files')?.addEventListener('click', () => {
+    import('./file-import').then(m => m.openImportDialog());
+  });
+  document.getElementById('file-import-input')?.addEventListener('change', () => {
+    import('./file-import').then(m => m.onFilesSelected());
+  });
+  document.getElementById('btn-confirm-import')?.addEventListener('click', () => {
+    import('./file-import').then(m => m.confirmImport());
+  });
+
+  // Sync progress cancel
+  document.getElementById('sync-progress-cancel')?.addEventListener('click', cancelSync);
 
   // Modal backdrops + data-modal-close buttons — single delegated listener
   document.addEventListener('click', e => {

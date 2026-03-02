@@ -2,22 +2,24 @@ import {
   visual, state, toVisualProjectState, applyVisualProjectState, saveLastMode,
   loadLocalDraft, clearLocalDraft,
 } from '../state';
-import { ghFetch, writeFile, decodeBase64, readFile } from '../github';
-import { pageUid } from '../utils';
+import { ghFetch, writeFile, decodeBase64, readFile, encodeRepoPath } from '../github';
+import { pageUid, detectLanguage } from '../utils';
 import { cacheFileInSW, invalidateSWFile } from '../preview-sw-client';
 import { preCacheLinkedAssets, cacheEntireRepoTree } from './asset-cache';
 import { parseHtmlToBlocks } from './convert';
 import { setDraftIndicator, debounceAutoSave } from '../draft';
 import type { Page } from '../types';
 import { generatePageHTML } from './export';
-import { openGeneratedFile, activateTab } from '../code-editor';
+import { openGeneratedFile, activateTab, flushSWCacheTimers } from '../code-editor';
 import {
   renderCanvas, initCanvasEvents, renderSectionPicker,
   exposeCanvasGlobals, updateVisualSaveBtn, applyThemeToCanvas,
-  exposeNavLinkGlobals, selectBlock, setInspectMode,
+  exposeNavLinkGlobals, selectBlock, setInspectMode, initCanvasDragDrop,
 } from './canvas';
 import { initSidebarCssPanel } from './properties';
 import { renderProperties } from './properties';
+import { initTemplateGallery, initPreviewButton, initMobilePreview, stopMobilePreview, showSetupWizard } from './templates';
+import { initAssetWizard } from './asset-wizard';
 import {
   renderPageList, createDefaultPage, switchPage,
   openAddPageModal, confirmAddPage,
@@ -34,14 +36,28 @@ let visualInitialised = false;
 export async function enterVisualMode(): Promise<void> {
   // ── One-time setup ──
   if (!visualInitialised) {
-    exposeCanvasGlobals();
-    exposePageAndNavGlobals();
-    initCanvasEvents();   // registers the window.message listener once
-    renderSectionPicker();
-    initDeviceButtons();
-    initToolModeButtons();
-    initCssActivityButton();
+    // Set the guard BEFORE running init so a thrown error doesn't leave the
+    // flag false — that would cause duplicate event listeners on retry.
     visualInitialised = true;
+    try {
+      exposeCanvasGlobals();
+      exposePageAndNavGlobals();
+      initCanvasEvents();   // registers the window.message listener once
+      initCanvasDragDrop(); // overlay-based drag-and-drop for block canvas
+      renderSectionPicker();
+      initDeviceButtons();
+      initToolModeButtons();
+      initCssActivityButton();
+      initUndoKeyboard();
+      initElementsActivityButton();
+      initTemplateGallery();
+      initAssetWizard();
+      initPreviewButton();
+      initMobilePreview();
+    } catch (e) {
+      notify('Visual editor init error: ' + (e as Error).message, 'warning');
+      console.error('[visual] Init failed:', e);
+    }
   }
 
   // ── Show visual UI ──
@@ -56,6 +72,8 @@ export async function enterVisualMode(): Promise<void> {
   document.getElementById('mode-vis-btn')?.classList.add('active');
   const cssBtn = document.getElementById('act-css');
   if (cssBtn) cssBtn.style.display = 'flex';
+  const elemBtn = document.getElementById('act-elements');
+  if (elemBtn) elemBtn.style.display = 'flex';
   document.getElementById('pull-btn')!.style.display         = 'none';
   document.getElementById('code-action-group')!.style.display = 'none';
   document.getElementById('vis-action-group')!.style.display  =
@@ -64,6 +82,11 @@ export async function enterVisualMode(): Promise<void> {
   visual.active = true;
   visual.mode   = 'visual';
   saveLastMode('visual');
+
+  // Flush pending debounced SW cache writes so stale content from
+  // in-flight timers doesn't overwrite the fresh content we're about
+  // to push below.
+  flushSWCacheTimers();
 
   // Immediately push ALL open code tabs to the SW cache so the visual
   // preview reflects every code edit (CSS, JS, HTML) the user made —
@@ -103,6 +126,7 @@ export async function enterVisualMode(): Promise<void> {
 // ── Enter code mode ───────────────────────────────────────────────────
 
 export function enterCodeMode(): void {
+  stopMobilePreview(); // Clear mobile preview interval — it runs continuously and wastes resources in code mode
 
   // Open the active page in the code editor.
   //
@@ -138,6 +162,8 @@ export function enterCodeMode(): void {
   document.getElementById('mode-vis-btn')?.classList.remove('active');
   const cssBtn2 = document.getElementById('act-css');
   if (cssBtn2) cssBtn2.style.display = 'none';
+  const elemBtn2 = document.getElementById('act-elements');
+  if (elemBtn2) elemBtn2.style.display = 'none';
   if (state.connected) {
     document.getElementById('pull-btn')!.style.display          = 'flex';
     document.getElementById('code-action-group')!.style.display = 'flex';
@@ -196,7 +222,7 @@ export async function loadVisualState(): Promise<void> {
       if (!state.openTabs.find(t => t.path === saved.path)) {
         state.openTabs.push({
           path: saved.path, content: saved.content,
-          sha: saved.sha, dirty: true, language: 'html',
+          sha: saved.sha, dirty: true, language: detectLanguage(saved.path),
         });
         cacheFileInSW(saved.path, saved.content);
       }
@@ -216,7 +242,7 @@ export async function loadVisualState(): Promise<void> {
   const path = '.wb/state.json';
   try {
     const data = await ghFetch<{ content: string; sha: string }>(
-      `/repos/${state.owner}/${state.repo}/contents/${encodeURIComponent(path)}?ref=${state.branch}`,
+      `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}?ref=${state.branch}`,
     );
     const json = JSON.parse(decodeBase64(data.content));
     const savedHasBlocks = pagesHaveBlocks(json.pages ?? []);
@@ -266,9 +292,11 @@ async function initFromExistingRepo(): Promise<void> {
     });
 
   if (htmlFiles.length === 0) {
-    // Truly empty repo — give the user a blank starter page
+    // Truly empty repo — give the user a blank starter page, then offer templates
     visual.pages = [createDefaultPage()];
     visual.dirty = true;
+    // Show setup wizard so first-timers can pick a template instead of starting blank
+    setTimeout(() => { if (visual.active) showSetupWizard(); }, 800);
     return;
   }
 
@@ -365,7 +393,7 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
     try {
       const file = await readFile(page.path);
       html = file.content;
-      state.openTabs.push({ path: page.path, content: html, sha: file.sha, dirty: false, language: 'html' });
+      state.openTabs.push({ path: page.path, content: html, sha: file.sha, dirty: false, language: detectLanguage(page.path) });
       state.fileShas[page.path] = file.sha;
     } catch (e) {
       notify('Could not load HTML: ' + (e as Error).message, 'error');
@@ -405,8 +433,8 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
  * Switch the unified sidebar to show a named panel and mark the matching
  * activity-bar icon as active.  Works in both Visual and Code mode.
  */
-export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'): void {
-  const panels = ['pages', 'explorer', 'search', 'css'] as const;
+export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css' | 'elements'): void {
+  const panels = ['pages', 'explorer', 'search', 'css', 'elements'] as const;
   for (const p of panels) {
     const panelEl  = document.getElementById(`panel-${p}`);
     const actIcon  = document.getElementById(`act-${p}`);
@@ -415,11 +443,21 @@ export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'
     if (actIcon)  actIcon.classList.toggle('active', isActive);
     if (isActive && panelEl) panelEl.style.flexDirection = 'column';
   }
+  // Lazy-render elements panel on first activation
+  if (name === 'elements') {
+    import('./canvas').then(({ renderElementsPanel }) => renderElementsPanel());
+  }
 }
 
 function initToolModeButtons(): void {
   document.getElementById('tool-edit')?.addEventListener('click', () => setInspectMode(false));
   document.getElementById('tool-inspect')?.addEventListener('click', () => setInspectMode(true));
+}
+
+function initElementsActivityButton(): void {
+  document.getElementById('act-elements')?.addEventListener('click', () => {
+    switchSidebarPanel('elements');
+  });
 }
 
 function initCssActivityButton(): void {
@@ -442,6 +480,47 @@ function initDeviceButtons(): void {
   });
 }
 
+// ── Undo / Redo keyboard + toolbar buttons (registered once) ──────────
+
+function initUndoKeyboard(): void {
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!visual.active) return; // only in visual mode
+    if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      import('./canvas').then(({ performUndo }) => performUndo());
+    }
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      import('./canvas').then(({ performRedo }) => performRedo());
+    }
+  });
+
+  // Add undo/redo buttons to vis-toolbar after page label
+  const toolbar = document.getElementById('vis-toolbar');
+  const pageLabel = document.getElementById('vis-page-label');
+  if (toolbar && pageLabel) {
+    const undoGroup = document.createElement('div');
+    undoGroup.style.cssText = 'display:flex;gap:2px;background:rgba(0,0,0,.2);border-radius:4px;padding:2px;margin-left:6px';
+    undoGroup.innerHTML = `
+      <button class="device-btn" id="vis-undo-btn" disabled title="Nothing to undo">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.22 6.28a.749.749 0 0 0 0 1.06l3.5 3.5a.749.749 0 1 0 1.06-1.06L3.31 7.34h6.19A4.5 4.5 0 0 1 14 11.84v.66a.75.75 0 0 0 1.5 0v-.66a6 6 0 0 0-6-6H3.31l2.47-2.47a.749.749 0 1 0-1.06-1.06l-3.5 3.5Z"/></svg>
+      </button>
+      <button class="device-btn" id="vis-redo-btn" disabled title="Nothing to redo">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M14.78 6.28a.749.749 0 0 1 0 1.06l-3.5 3.5a.749.749 0 1 1-1.06-1.06l2.47-2.47H6.5A4.5 4.5 0 0 0 2 11.84v.66a.75.75 0 0 1-1.5 0v-.66a6 6 0 0 1 6-6h6.19l-2.47-2.47a.749.749 0 1 1 1.06-1.06l3.5 3.5Z"/></svg>
+      </button>`;
+    pageLabel.insertAdjacentElement('afterend', undoGroup);
+  }
+
+  // Wire button clicks
+  document.getElementById('vis-undo-btn')?.addEventListener('click', () => {
+    import('./canvas').then(({ performUndo }) => performUndo());
+  });
+  document.getElementById('vis-redo-btn')?.addEventListener('click', () => {
+    import('./canvas').then(({ performRedo }) => performRedo());
+  });
+}
+
 // ── Page + nav-link globals (registered once) ─────────────────────────
 
 function exposePageAndNavGlobals(): void {
@@ -454,6 +533,7 @@ function exposePageAndNavGlobals(): void {
   w._confirmAddPage         = confirmAddPage;
   w._selectBlockFromList    = (id: string) => selectBlock(id);
   w._convertPageToBlocks    = convertCurrentPageToBlocks;
+  w._showTemplateGallery    = () => import('./templates').then(m => m.showTemplateGallery());
 
   exposeNavLinkGlobals(
     (blockId: string) => import('./pages').then(m => m.handleAddNavLink(blockId)),
@@ -480,6 +560,15 @@ export async function pushVisualChanges(): Promise<void> {
     const stateKey    = '.wb/state.json';
     const stateResult = await writeFile(stateKey, stateJson, `${commitMsg} [state]`, state.fileShas[stateKey]);
     state.fileShas[stateKey] = stateResult.sha;
+    // Update IDB cache for state.json
+    import('../repo-cache').then(({ putCachedFile, cacheKey }) => {
+      putCachedFile({
+        id: cacheKey(state.owner, state.repo, state.branch, stateKey),
+        owner: state.owner, repo: state.repo, branch: state.branch,
+        path: stateKey, sha: stateResult.sha, content: stateJson,
+        isText: true, cachedAt: Date.now(),
+      });
+    }).catch(() => {});
 
     const dirtyPages = visual.pages.filter(p => p.dirty !== false);
     for (const page of dirtyPages) {
@@ -489,6 +578,15 @@ export async function pushVisualChanges(): Promise<void> {
       page.dirty = false;
       invalidateSWFile(page.path); // SW will re-fetch after the next GitHub Pages rebuild
       pushed++;
+      // Update IDB cache for the page HTML
+      import('../repo-cache').then(({ putCachedFile, cacheKey }) => {
+        putCachedFile({
+          id: cacheKey(state.owner, state.repo, state.branch, page.path),
+          owner: state.owner, repo: state.repo, branch: state.branch,
+          path: page.path, sha: result.sha, content: html,
+          isText: true, cachedAt: Date.now(),
+        });
+      }).catch(() => {});
     }
 
     visual.dirty = false;

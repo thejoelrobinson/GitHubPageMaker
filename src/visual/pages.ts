@@ -52,6 +52,25 @@ export function addPage(title: string, path: string): Page {
   return page;
 }
 
+/** Create a page with NO default blocks — used by the asset wizard so it can
+ *  populate the page entirely from generated/extracted block data. */
+export function addEmptyPage(title: string, path: string): Page {
+  const id = pageUid();
+  const page: Page = {
+    id,
+    path,
+    title,
+    isHome: false,
+    description: '',
+    dirty: true,
+    blocks: [],
+  };
+  visual.pages.push(page);
+  visual.dirty = true;
+  renderPageList();
+  return page;
+}
+
 export function deletePage(id: string): void {
   if (visual.pages.length <= 1) { notify('Cannot delete the last page', 'warning'); return; }
   if (!confirm('Delete this page? This cannot be undone.')) return;
@@ -89,10 +108,14 @@ export function switchPage(id: string): void {
           });
           state.fileShas[page.path] = file.sha;
         }
-        // Pre-cache linked CSS/JS/images so they're available before the iframe loads.
-        // Fire-and-forget — a failure here only degrades rendering, doesn't break it.
-        preCacheLinkedAssets(page.path, file.content).catch(err =>
+        // Pre-cache linked CSS/JS/images BEFORE setting iframe.src so the SW
+        // has them ready when the browser requests subresources.
+        await preCacheLinkedAssets(page.path, file.content).catch(err =>
           console.warn('[asset-cache] Pre-cache failed for', page.path, err),
+        );
+        // Re-cache the page HTML itself (for code-mode edits made since load)
+        import('../preview-sw-client').then(({ cacheFileInSW }) =>
+          cacheFileInSW(page.path, file.content),
         );
         if (visual.activePage?.id === id) renderCanvas();
       })
@@ -282,14 +305,27 @@ export function renderSectionList(): void {
 // ── Open add page dialog ──────────────────────────────────────────────
 
 export function openAddPageModal(): void {
+  // Show the picker view; hide the blank-page form sub-view
+  const picker = document.getElementById('add-page-picker');
+  const form   = document.getElementById('add-page-form');
+  if (picker) picker.style.display = 'block';
+  if (form)   form.style.display   = 'none';
   document.getElementById('add-page-modal')?.classList.remove('hidden');
+}
+
+/** Switch add-page modal to the blank-page title/path form. */
+export function showAddPageForm(): void {
+  const picker = document.getElementById('add-page-picker');
+  const form   = document.getElementById('add-page-form');
+  if (picker) picker.style.display = 'none';
+  if (form)   form.style.display   = 'block';
+
   const titleInput = document.getElementById('new-page-title') as HTMLInputElement | null;
   const pathInput  = document.getElementById('new-page-path')  as HTMLInputElement | null;
   if (titleInput) { titleInput.value = ''; titleInput.focus(); }
   if (pathInput) pathInput.value = '';
 
-  // Use oninput assignment (not addEventListener) to avoid listener accumulation
-  // across multiple modal opens.
+  // oninput assignment avoids listener accumulation across multiple modal opens
   if (titleInput && pathInput) {
     const pi = pathInput;
     titleInput.oninput = (e: Event) => {

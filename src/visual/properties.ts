@@ -1,9 +1,122 @@
-import { visual, state } from '../state';
+import { visual, state, DEFAULT_THEME } from '../state';
 import { BLOCK_DEFS } from './blocks';
-import { updateBlockValue, rerenderBlock, syncActivePageCodeTab, getDmSelected, dmSetInlineStyle, dmHighlightSection, dmSetCssLive } from './canvas';
+import { updateBlockValue, rerenderBlock, syncActivePageCodeTab, getDmSelected, dmSetInlineStyle, dmHighlightSection, dmSetCssLive, previewBlockAnimation } from './canvas';
 import type { SelectedElement, BreadcrumbItem } from './canvas';
 import { escapeHtml, debounce } from '../utils';
 import type { NavLink, Theme } from '../types';
+
+// ── Theme-link icons ──────────────────────────────────────────────────
+
+const LINK_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .75.75 0 0 1 1.06-1.06 2 2 0 0 0 2.83 0l2.5-2.5a2 2 0 0 0-2.83-2.83l-1.25 1.25a.75.75 0 0 1-1.06-1.06Zm-4.69 9.64a2 2 0 0 0 2.83 0l1.25-1.25a.75.75 0 0 1 1.06 1.06l-1.25 1.25a3.5 3.5 0 0 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .75.75 0 0 1-1.06 1.06 2 2 0 0 0-2.83 0l-2.5 2.5a2 2 0 0 0 0 2.83Z"/></svg>`;
+const UNLINK_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .75.75 0 0 1 1.06-1.06 2 2 0 0 0 2.83 0l2.5-2.5a2 2 0 0 0-2.83-2.83l-1.25 1.25a.75.75 0 0 1-1.06-1.06Zm-4.69 9.64a2 2 0 0 0 2.83 0l1.25-1.25a.75.75 0 0 1 1.06 1.06l-1.25 1.25a3.5 3.5 0 0 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .75.75 0 0 1-1.06 1.06 2 2 0 0 0-2.83 0l-2.5 2.5a2 2 0 0 0 0 2.83Z"/><line x1="2" y1="2" x2="14" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+/**
+ * Returns the set of setting keys for a block type that are derived from the
+ * theme (i.e. change when the theme changes).  Computed by comparing
+ * defaultSettings against a dummy theme with completely different values.
+ */
+function getThemeDerivedKeys(blockType: string): Set<string> {
+  const def = BLOCK_DEFS[blockType];
+  if (!def) return new Set();
+  const d1 = def.defaultSettings(DEFAULT_THEME);
+  const alt: typeof DEFAULT_THEME = {
+    primary: '#ff0000', accent: '#00ff00', text: '#0000ff', textMuted: '#ffff00',
+    bg: '#ff00ff', bgAlt: '#00ffff', headingFont: '__H__', bodyFont: '__B__', radius: '99',
+  };
+  const d2 = def.defaultSettings(alt);
+  return new Set(Object.keys(d1).filter(k => d1[k] !== d2[k]));
+}
+
+/** Inject link/unlink toggle buttons next to theme-derived settings in the panel. */
+function injectLinkIcons(panel: HTMLElement, block: import('../types').Block): void {
+  const themed = getThemeDerivedKeys(block.type);
+  if (!themed.size) return;
+
+  panel.querySelectorAll<HTMLElement>('[data-key^="settings."]').forEach(input => {
+    const settingKey = (input.getAttribute('data-key') ?? '').replace('settings.', '');
+    if (!themed.has(settingKey)) return;
+
+    const row = input.closest('.pp-row');
+    if (!row || row.querySelector('.pp-link-btn')) return;
+
+    const isLinked = !block.unlinked?.includes(settingKey);
+    const btn = document.createElement('button');
+    btn.className = `pp-link-btn${isLinked ? ' linked' : ' unlinked'}`;
+    btn.dataset.linkKey = settingKey;
+    btn.title = isLinked
+      ? 'Linked to theme — Looks will update this color'
+      : 'Unlinked from theme — Looks won\'t change this';
+    btn.innerHTML = isLinked ? LINK_ICON : UNLINK_ICON;
+    row.appendChild(btn);
+  });
+}
+
+
+// ── Entrance Animation panel section (appended to every block's settings) ──
+
+const ANIM_OPTIONS: [string, string][] = [
+  ['none',          'None'],
+  ['fade-up',       'Fade Up \u2191'],
+  ['fade-down',     'Fade Down \u2193'],
+  ['fade-in-left',  'Slide In \u2190 Left'],
+  ['fade-in-right', 'Slide In Right \u2192'],
+  ['fade-in',       'Fade In'],
+  ['zoom-in',       'Zoom In'],
+  ['zoom-out',      'Zoom Out'],
+  ['flip-up',       'Flip Up'],
+  ['slide-up',      'Slide Up'],
+  ['blur-in',       'Blur In'],
+];
+
+const EASING_OPTIONS: [string, string][] = [
+  ['ease',                            'Ease'],
+  ['ease-out',                        'Ease Out'],
+  ['ease-in-out',                     'Ease In-Out'],
+  ['cubic-bezier(0.34,1.56,0.64,1)', 'Spring'],
+  ['cubic-bezier(0.16,1,0.3,1)',     'Power'],
+];
+
+function animationSection(block: import('../types').Block): string {
+  const animIn = String(block.settings.animIn       ?? 'none');
+  const dur    = Number(block.settings.animDuration ?? 600);
+  const delay  = Number(block.settings.animDelay    ?? 0);
+  const ease   = String(block.settings.animEasing   ?? 'ease');
+
+  const animOpts = ANIM_OPTIONS.map(([v, l]) =>
+    `<option value="${v}"${animIn === v ? ' selected' : ''}>${l}</option>`,
+  ).join('');
+  const easeOpts = EASING_OPTIONS.map(([v, l]) =>
+    `<option value="${v}"${ease === v ? ' selected' : ''}>${l}</option>`,
+  ).join('');
+
+  const PLAY_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11" aria-hidden="true"><path d="M3 3.732a1.125 1.125 0 0 1 1.75-.936l7.5 4.267a1.125 1.125 0 0 1 0 1.874l-7.5 4.267A1.125 1.125 0 0 1 3 12.268V3.732Z"/></svg>`;
+
+  return `<div class="pp-group">
+    <label class="pp-label">Entrance Animation</label>
+    <div class="pp-row">
+      <select class="pp-select" data-key="settings.animIn" style="flex:1">${animOpts}</select>
+      <button class="pp-icon-btn" id="pp-anim-replay" title="Preview animation"
+        style="flex-shrink:0${animIn === 'none' ? ';display:none' : ''}">${PLAY_SVG}</button>
+    </div>
+    <div id="pp-anim-timing"${animIn === 'none' ? ' style="display:none"' : ''}>
+      <div class="pp-row" style="margin-top:6px;align-items:center">
+        <span style="font-size:11px;color:var(--text-secondary);width:52px;flex-shrink:0">Duration</span>
+        <input type="range" class="pp-range" data-key="settings.animDuration"
+          min="200" max="1500" step="100" value="${dur}" style="flex:1">
+        <span id="pp-anim-dur-val" style="font-size:11px;color:var(--text-dim);width:38px;text-align:right">${dur}ms</span>
+      </div>
+      <div class="pp-row" style="margin-top:4px;align-items:center">
+        <span style="font-size:11px;color:var(--text-secondary);width:52px;flex-shrink:0">Delay</span>
+        <input type="range" class="pp-range" data-key="settings.animDelay"
+          min="0" max="1000" step="50" value="${delay}" style="flex:1">
+        <span id="pp-anim-delay-val" style="font-size:11px;color:var(--text-dim);width:38px;text-align:right">${delay}ms</span>
+      </div>
+      <div class="pp-row" style="margin-top:4px">
+        <select class="pp-select" data-key="settings.animEasing" style="flex:1">${easeOpts}</select>
+      </div>
+    </div>
+  </div>`;
+}
 
 // ── Properties Panel ──────────────────────────────────────────────────
 
@@ -21,7 +134,9 @@ export function renderProperties(): void {
         </div>
         ${def?.settingsPanel(block) ?? ''}
         ${block.type === 'nav' ? renderNavLinksEditor(block.id, block.content.links as NavLink[]) : ''}
+        ${animationSection(block)}
       `;
+      injectLinkIcons(panel, block);
       bindPanelEvents(panel);
       return;
     }
@@ -81,6 +196,15 @@ function fontOptions(selected: string): string {
   return FONTS.map(f => `<option value="${f}" ${f === selected ? 'selected' : ''}>${f}</option>`).join('');
 }
 
+/** Render a link/unlink toggle button for a theme-level field. */
+function themeLinkBtn(field: string): string {
+  const linked = !_unlinkedThemeFields.has(field);
+  return `<button class="pp-link-btn ${linked ? 'linked' : 'unlinked'}" data-theme-link="${field}"
+    title="${linked ? 'Linked — Looks will update this' : 'Unlinked — Looks won\'t change this'}">
+    ${linked ? LINK_ICON : UNLINK_ICON}
+  </button>`;
+}
+
 function renderThemePanel(): string {
   const t = visual.theme;
   return `
@@ -91,21 +215,27 @@ function renderThemePanel(): string {
     </div>
     <div class="pp-group">
       <label class="pp-label">Colors</label>
-      <div class="pp-row"><input type="color" value="${t.primary}" class="pp-color" id="tc-primary"><span class="pp-color-label">Primary</span></div>
-      <div class="pp-row"><input type="color" value="${t.accent}" class="pp-color" id="tc-accent"><span class="pp-color-label">Accent / Buttons</span></div>
-      <div class="pp-row"><input type="color" value="${t.text}" class="pp-color" id="tc-text"><span class="pp-color-label">Body Text</span></div>
-      <div class="pp-row"><input type="color" value="${t.bg}" class="pp-color" id="tc-bg"><span class="pp-color-label">Page Background</span></div>
-      <div class="pp-row"><input type="color" value="${t.bgAlt}" class="pp-color" id="tc-bgAlt"><span class="pp-color-label">Alt Background</span></div>
+      <div class="pp-row"><input type="color" value="${t.primary}" class="pp-color" id="tc-primary"><span class="pp-color-label">Primary</span>${themeLinkBtn('primary')}</div>
+      <div class="pp-row"><input type="color" value="${t.accent}" class="pp-color" id="tc-accent"><span class="pp-color-label">Accent / Buttons</span>${themeLinkBtn('accent')}</div>
+      <div class="pp-row"><input type="color" value="${t.text}" class="pp-color" id="tc-text"><span class="pp-color-label">Body Text</span>${themeLinkBtn('text')}</div>
+      <div class="pp-row"><input type="color" value="${t.bg}" class="pp-color" id="tc-bg"><span class="pp-color-label">Page Background</span>${themeLinkBtn('bg')}</div>
+      <div class="pp-row"><input type="color" value="${t.bgAlt}" class="pp-color" id="tc-bgAlt"><span class="pp-color-label">Alt Background</span>${themeLinkBtn('bgAlt')}</div>
     </div>
     <div class="pp-group">
       <label class="pp-label">Typography</label>
-      <label class="pp-label" style="font-size:11px;margin-top:0">Heading Font</label>
+      <div class="pp-row" style="align-items:center;margin-bottom:4px">
+        <span style="font-size:11px;color:var(--text-secondary);flex:1">Heading Font</span>${themeLinkBtn('headingFont')}
+      </div>
       <select class="pp-select" id="tf-heading">${fontOptions(t.headingFont)}</select>
-      <label class="pp-label" style="font-size:11px;margin-top:6px">Body Font</label>
+      <div class="pp-row" style="align-items:center;margin-top:8px;margin-bottom:4px">
+        <span style="font-size:11px;color:var(--text-secondary);flex:1">Body Font</span>${themeLinkBtn('bodyFont')}
+      </div>
       <select class="pp-select" id="tf-body">${fontOptions(t.bodyFont)}</select>
     </div>
     <div class="pp-group">
-      <label class="pp-label">Border Radius</label>
+      <div class="pp-row" style="align-items:center;margin-bottom:4px">
+        <label class="pp-label" style="margin:0;flex:1">Border Radius</label>${themeLinkBtn('radius')}
+      </div>
       <input type="range" min="0" max="20" step="1" value="${t.radius}" class="pp-range" id="t-radius">
       <span id="t-radius-val" style="font-size:11px;color:var(--text-secondary)">${t.radius}px</span>
     </div>
@@ -118,10 +248,61 @@ function bindPanelEvents(panel: HTMLElement): void {
   const blockId = visual.selectedBlockId;
   if (!blockId) return;
 
+  // Capture block type at bind time (safe — type never changes mid-session)
+  const blockType = visual.activePage?.blocks.find(b => b.id === blockId)?.type ?? '';
+  const themedKeys = getThemeDerivedKeys(blockType);
+
+  // Link / unlink toggle buttons
+  panel.querySelectorAll<HTMLButtonElement>('.pp-link-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      // Fresh lookup — avoids stale closure if selection changed
+      const block = visual.activePage?.blocks.find(b => b.id === blockId);
+      if (!block) return;
+      const key = btn.dataset.linkKey!;
+      if (!block.unlinked) block.unlinked = [];
+      const idx = block.unlinked.indexOf(key);
+      if (idx >= 0) {
+        block.unlinked.splice(idx, 1);
+        btn.className = 'pp-link-btn linked';
+        btn.title = 'Linked to theme — Looks will update this color';
+        btn.innerHTML = LINK_ICON;
+      } else {
+        block.unlinked.push(key);
+        btn.className = 'pp-link-btn unlinked';
+        btn.title = 'Unlinked from theme — Looks won\'t change this';
+        btn.innerHTML = UNLINK_ICON;
+      }
+      visual.dirty = true;
+      if (visual.activePage) visual.activePage.dirty = true;
+    });
+  });
+
+  // Auto-unlink helper — applies to any theme-derived input (color, text, gradient, etc.)
+  function autoUnlinkInput(input: HTMLInputElement | HTMLTextAreaElement): void {
+    const key = (input.dataset.key ?? '').replace('settings.', '');
+    if (!themedKeys.has(key)) return;
+    const block = visual.activePage?.blocks.find(b => b.id === blockId); // fresh lookup
+    if (!block) return;
+    if (!block.unlinked) block.unlinked = [];
+    if (!block.unlinked.includes(key)) {
+      block.unlinked.push(key);
+      visual.dirty = true;
+      if (visual.activePage) visual.activePage.dirty = true;
+    }
+    const btn = input.closest('.pp-row')?.querySelector<HTMLElement>('.pp-link-btn');
+    if (btn) {
+      btn.className = 'pp-link-btn unlinked';
+      btn.title = 'Unlinked from theme — Looks won\'t change this';
+      btn.innerHTML = UNLINK_ICON;
+    }
+  }
+
   // Color pickers
   panel.querySelectorAll<HTMLInputElement>('.pp-color[data-key]').forEach(input => {
     input.addEventListener('input', () => {
       updateBlockValue(blockId, input.dataset.key!, input.value);
+      autoUnlinkInput(input);
     });
   });
 
@@ -133,12 +314,13 @@ function bindPanelEvents(panel: HTMLElement): void {
     });
   });
 
-  // Text inputs and textareas (custom block HTML editor uses textarea)
+  // Text inputs — also auto-unlink if the setting is theme-derived (e.g. bgGradient)
   panel.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
     '.pp-input[data-key]:not(.pp-html-editor)',
   ).forEach(input => {
     input.addEventListener('change', () => {
       updateBlockValue(blockId, input.dataset.key!, input.value);
+      autoUnlinkInput(input);
     });
   });
 
@@ -210,11 +392,86 @@ function bindPanelEvents(panel: HTMLElement): void {
       (panel.querySelector('#hero-bg-image') as HTMLElement | null)?.style.setProperty('display', val === 'image' ? 'block' : 'none');
     });
   });
+
+  // Entrance animation: toggle timing controls + auto-preview + replay button
+  const animInSel   = panel.querySelector<HTMLSelectElement>('[data-key="settings.animIn"]');
+  const animTiming  = panel.querySelector<HTMLElement>('#pp-anim-timing');
+  const animReplay  = panel.querySelector<HTMLButtonElement>('#pp-anim-replay');
+
+  function getAnimSettings() {
+    const block = visual.activePage?.blocks.find(b => b.id === blockId);
+    return {
+      animIn:   String(block?.settings.animIn       ?? 'none'),
+      duration: Number(block?.settings.animDuration ?? 600),
+      delay:    Number(block?.settings.animDelay    ?? 0),
+      ease:     String(block?.settings.animEasing   ?? 'ease'),
+    };
+  }
+
+  function triggerPreview() {
+    const s = getAnimSettings();
+    if (s.animIn !== 'none') previewBlockAnimation(blockId!, s.animIn, s.duration, s.delay, s.ease);
+  }
+
+  if (animInSel && animTiming) {
+    animInSel.addEventListener('change', () => {
+      const isNone = animInSel.value === 'none';
+      animTiming.style.display = isNone ? 'none' : '';
+      if (animReplay) animReplay.style.display = isNone ? 'none' : '';
+      // Auto-preview: fire after the updateBlockValue has applied the new value
+      if (!isNone) requestAnimationFrame(triggerPreview);
+    });
+  }
+
+  animReplay?.addEventListener('click', triggerPreview);
+
+  panel.querySelector<HTMLInputElement>('[data-key="settings.animDuration"]')
+    ?.addEventListener('input', e => {
+      const lbl = panel.querySelector<HTMLElement>('#pp-anim-dur-val');
+      if (lbl) lbl.textContent = (e.target as HTMLInputElement).value + 'ms';
+    });
+  panel.querySelector<HTMLInputElement>('[data-key="settings.animDelay"]')
+    ?.addEventListener('input', e => {
+      const lbl = panel.querySelector<HTMLElement>('#pp-anim-delay-val');
+      if (lbl) lbl.textContent = (e.target as HTMLInputElement).value + 'ms';
+    });
 }
 
 type ThemeKey = keyof Theme;
 
 function bindThemePanelEvents(panel: HTMLElement): void {
+  // ── Link / unlink toggles for theme-level fields ───────────────────
+  panel.querySelectorAll<HTMLButtonElement>('[data-theme-link]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const field = btn.dataset.themeLink!;
+      if (_unlinkedThemeFields.has(field)) {
+        _unlinkedThemeFields.delete(field);
+        btn.className = 'pp-link-btn linked';
+        btn.title = 'Linked — Looks will update this';
+        btn.innerHTML = LINK_ICON;
+      } else {
+        _unlinkedThemeFields.add(field);
+        btn.className = 'pp-link-btn unlinked';
+        btn.title = 'Unlinked — Looks won\'t change this';
+        btn.innerHTML = UNLINK_ICON;
+      }
+    });
+  });
+
+  // Helper: auto-unlink a theme field when the user manually edits it
+  function autoUnlinkTheme(field: string): void {
+    if (_unlinkedThemeFields.has(field)) return; // already unlinked
+    _unlinkedThemeFields.add(field);
+    const btn = panel.querySelector<HTMLElement>(`[data-theme-link="${field}"]`);
+    if (btn) {
+      btn.className = 'pp-link-btn unlinked';
+      btn.title = 'Unlinked — Looks won\'t change this';
+      btn.innerHTML = UNLINK_ICON;
+    }
+  }
+
+  // ── Color pickers ─────────────────────────────────────────────────
   const themeColorMap: Record<string, ThemeKey> = {
     'tc-primary': 'primary',
     'tc-accent':  'accent',
@@ -226,6 +483,7 @@ function bindThemePanelEvents(panel: HTMLElement): void {
   Object.entries(themeColorMap).forEach(([id, key]) => {
     panel.querySelector<HTMLInputElement>(`#${id}`)?.addEventListener('input', function () {
       (visual.theme as unknown as Record<string, string>)[key as string] = this.value;
+      autoUnlinkTheme(key as string);
       onThemeChange();
     });
   });
@@ -236,21 +494,26 @@ function bindThemePanelEvents(panel: HTMLElement): void {
     import('./canvas').then(({ updateVisualSaveBtn }) => updateVisualSaveBtn());
   });
 
+  // ── Font selects ──────────────────────────────────────────────────
   panel.querySelector<HTMLSelectElement>('#tf-heading')?.addEventListener('change', function () {
     visual.theme.headingFont = this.value;
+    autoUnlinkTheme('headingFont');
     onThemeChange();
   });
 
   panel.querySelector<HTMLSelectElement>('#tf-body')?.addEventListener('change', function () {
     visual.theme.bodyFont = this.value;
+    autoUnlinkTheme('bodyFont');
     onThemeChange();
   });
 
+  // ── Radius range ──────────────────────────────────────────────────
   const radiusRange = panel.querySelector<HTMLInputElement>('#t-radius');
   const radiusVal   = panel.querySelector<HTMLElement>('#t-radius-val');
   radiusRange?.addEventListener('input', function () {
     visual.theme.radius = this.value;
     if (radiusVal) radiusVal.textContent = `${this.value}px`;
+    autoUnlinkTheme('radius');
     onThemeChange();
   });
 }
@@ -307,18 +570,29 @@ function parseFloatValue(val: string | undefined): string {
 interface CssPropEntry { prop: string; value: string; }
 interface CssRuleEntry { selector: string; props: CssPropEntry[]; }
 
-let dmCssContent    = '';
+let dmCssContent     = '';
 let dmCssPath: string | null = null;
 let dmCssParsed: CssRuleEntry[] = [];
 let dmCssActiveRule: number | null = null;
 let dmCssTimer: ReturnType<typeof setTimeout> | null = null;
+/** Set to true once initSidebarCssPanel has finished its first load attempt. */
+let dmCssInitialized = false;
+/** User-captured Looks (e.g. "Original" saved when converting imported CSS). Session-only. */
+let _customLooks: Look[] = [];
+/** owner/repo these were captured for — clears _customLooks on repo switch. */
+let _customLooksRepo = '';
+/**
+ * Theme-level fields explicitly unlinked from the Look system.
+ * When a field is in this set, applying a Look will NOT update that visual.theme field.
+ */
+let _unlinkedThemeFields = new Set<string>();
 
 // ── CSS Variables state ───────────────────────────────────────────────
 interface CssVariable  { name: string; value: string; }
 interface CssVarsState { light: CssVariable[]; dark: CssVariable[]; hasDarkMode: boolean; darkSelector: string; }
 type CssVarType = 'color' | 'font' | 'size' | 'gradient' | 'shadow' | 'transition' | 'other';
 let dmCssVars: CssVarsState = { light: [], dark: [], hasDarkMode: false, darkSelector: '' };
-let dmCssPanelView: 'variables' | 'rules' = 'rules';
+let dmCssPanelView: 'variables' | 'looks' | 'rules' = 'rules';
 let dmCssVarsDark = false;
 let dmVarTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -561,6 +835,375 @@ function renderVarControl(idx: number, name: string, value: string, isDark: bool
   return `<input type="text" class="pp-input css-var-ctrl" value="${escapeHtml(value)}" ${ba} data-ctrl="text">`;
 }
 
+// ── Looks Gallery ─────────────────────────────────────────────────────
+
+interface Look {
+  id: string; name: string; emoji: string; description: string;
+  vars: Record<string, string>;
+}
+
+const LOOKS: Look[] = [
+  { id:'modern-dark', name:'Modern Dark', emoji:'\u{1F311}', description:'Sleek dark background with indigo accent',
+    vars: { '--color-primary':'#6366f1','--color-accent':'#6366f1','--color-bg':'#0f172a','--color-bg-alt':'#1e293b','--color-text':'#e2e8f0','--color-text-muted':'#94a3b8','--font-heading':"'Plus Jakarta Sans', sans-serif",'--font-body':"'DM Sans', sans-serif" ,'--radius':'6'}},
+  { id:'warm-minimal', name:'Warm Minimal', emoji:'\u2600\uFE0F', description:'Warm cream tones, clean typography',
+    vars: { '--color-primary':'#d97706','--color-accent':'#f59e0b','--color-bg':'#fffbeb','--color-bg-alt':'#fef3c7','--color-text':'#1c1917','--color-text-muted':'#a16207','--font-heading':"'Merriweather', serif",'--font-body':"'Lato', sans-serif" ,'--radius':'12'}},
+  { id:'bold-agency', name:'Bold Agency', emoji:'\u26A1', description:'High contrast black with bright accent',
+    vars: { '--color-primary':'#facc15','--color-accent':'#eab308','--color-bg':'#09090b','--color-bg-alt':'#18181b','--color-text':'#fafafa','--color-text-muted':'#a1a1aa','--font-heading':"'Oswald', sans-serif",'--font-body':"'Open Sans', sans-serif" ,'--radius':'0'}},
+  { id:'classic-editorial', name:'Classic Editorial', emoji:'\u{1F4F0}', description:'Sophisticated serif for content-first sites',
+    vars: { '--color-primary':'#1e40af','--color-accent':'#2563eb','--color-bg':'#fefce8','--color-bg-alt':'#fef9c3','--color-text':'#1e293b','--color-text-muted':'#78716c','--font-heading':"'Playfair Display', serif",'--font-body':"'Source Serif 4', serif" ,'--radius':'4'}},
+  { id:'friendly-startup', name:'Friendly Startup', emoji:'\u{1F680}', description:'Rounded and approachable with teal accent',
+    vars: { '--color-primary':'#0d9488','--color-accent':'#0d9488','--color-bg':'#f0fdfa','--color-bg-alt':'#ccfbf1','--color-text':'#134e4a','--color-text-muted':'#4d7c74','--font-heading':"'Nunito', sans-serif",'--font-body':"'Nunito', sans-serif" ,'--radius':'16'}},
+  { id:'luxury-minimal', name:'Luxury Minimal', emoji:'\u{1F48E}', description:'Refined gold accent on pure white',
+    vars: { '--color-primary':'#b45309','--color-accent':'#d97706','--color-bg':'#ffffff','--color-bg-alt':'#fafaf9','--color-text':'#1c1917','--color-text-muted':'#78716c','--font-heading':"'Raleway', sans-serif",'--font-body':"'Lato', sans-serif" ,'--radius':'6'}},
+  { id:'ocean-fresh', name:'Ocean Fresh', emoji:'\u{1F30A}', description:'Clean blues and whites, modern feel',
+    vars: { '--color-primary':'#0284c7','--color-accent':'#0ea5e9','--color-bg':'#f0f9ff','--color-bg-alt':'#e0f2fe','--color-text':'#0c4a6e','--color-text-muted':'#5e8ca0','--font-heading':"'Poppins', sans-serif",'--font-body':"'Open Sans', sans-serif" ,'--radius':'8'}},
+  { id:'forest-natural', name:'Forest Natural', emoji:'\u{1F33F}', description:'Earthy greens for wellness and nature brands',
+    vars: { '--color-primary':'#16a34a','--color-accent':'#22c55e','--color-bg':'#f0fdf4','--color-bg-alt':'#dcfce7','--color-text':'#14532d','--color-text-muted':'#4a7c5b','--font-heading':"'Plus Jakarta Sans', sans-serif",'--font-body':"'Lato', sans-serif" ,'--radius':'10'}},
+  { id:'tech-purple', name:'Tech Purple', emoji:'\u{1F52E}', description:'Deep purple tech-startup aesthetic',
+    vars: { '--color-primary':'#9333ea','--color-accent':'#a855f7','--color-bg':'#0f0a1e','--color-bg-alt':'#1a0f2e','--color-text':'#f3e8ff','--color-text-muted':'#a78bfa','--font-heading':"'Space Grotesk', sans-serif",'--font-body':"'Inter', sans-serif" ,'--radius':'8'}},
+  { id:'rose-elegant', name:'Rose Elegant', emoji:'\u{1F338}', description:'Soft rose tones for lifestyle and beauty',
+    vars: { '--color-primary':'#e11d48','--color-accent':'#f43f5e','--color-bg':'#fff1f2','--color-bg-alt':'#ffe4e6','--color-text':'#881337','--color-text-muted':'#be123c','--font-heading':"'Playfair Display', serif",'--font-body':"'DM Sans', sans-serif" ,'--radius':'14'}},
+  { id:'monochrome', name:'Monochrome', emoji:'\u25D1', description:'Timeless black and white, no distractions',
+    vars: { '--color-primary':'#18181b','--color-accent':'#3f3f46','--color-bg':'#fafafa','--color-bg-alt':'#f4f4f5','--color-text':'#09090b','--color-text-muted':'#71717a','--font-heading':"'Inter', sans-serif",'--font-body':"'Inter', sans-serif" ,'--radius':'2'}},
+  { id:'retro-warm', name:'Retro Warm', emoji:'\u{1F39E}\uFE0F', description:'70s-inspired warm oranges and cream',
+    vars: { '--color-primary':'#c2410c','--color-accent':'#ea580c','--color-bg':'#fffbf0','--color-bg-alt':'#fef3c7','--color-text':'#7c2d12','--color-text-muted':'#b45309','--font-heading':"'Bebas Neue', sans-serif",'--font-body':"'Raleway', sans-serif" ,'--radius':'4'}},
+  { id:'living-design', name:'Living Design', emoji:'\u{1F537}', description:'Walmart Living Design 3.5 — Bentonville Blue, rounded tiles, clean sans',
+    vars: { '--color-primary':'#001e60','--color-accent':'#0071ce','--color-bg':'#ffffff','--color-bg-alt':'#f4f4f4','--color-text':'#1a1a1a','--color-text-muted':'#46464a','--font-heading':"'Plus Jakarta Sans', sans-serif",'--font-body':"'Plus Jakarta Sans', sans-serif",'--radius':'12' }},
+];
+
+const FONT_PAIRS = [
+  { name: 'Modern',    heading: 'Inter',             body: 'DM Sans',            desc: 'Clean and professional' },
+  { name: 'Editorial', heading: 'Playfair Display',  body: 'Lato',               desc: 'Elegant storytelling' },
+  { name: 'Bold',      heading: 'Oswald',            body: 'Open Sans',          desc: 'Strong and direct' },
+  { name: 'Friendly',  heading: 'Nunito',            body: 'Nunito',             desc: 'Warm and approachable' },
+  { name: 'Tech',      heading: 'Space Grotesk',     body: 'Inter',              desc: 'Developer-forward' },
+  { name: 'Classic',   heading: 'Merriweather',      body: 'Georgia, serif',     desc: 'Timeless readability' },
+  { name: 'Playful',   heading: 'Raleway',           body: 'Montserrat',         desc: 'Creative and fun' },
+  { name: 'Sharp',     heading: 'Plus Jakarta Sans', body: 'Plus Jakarta Sans',  desc: 'Modern Swiss style' },
+];
+
+function renderLookCard(look: Look): string {
+  const bgColor     = look.vars['--color-bg']      ?? '#fff';
+  const primaryColor = look.vars['--color-primary'] ?? '#000';
+  const accentColor  = look.vars['--color-accent']  ?? primaryColor;
+  const textColor   = look.vars['--color-text']    ?? '#000';
+  const headingFont = (look.vars['--font-heading'] ?? '').replace(/['"]/g, '').split(',')[0].trim();
+  return `<button class="look-card" data-look-id="${look.id}" title="${escapeHtml(look.description)}">
+    <div class="look-preview" style="background:${escapeHtml(bgColor)}">
+      <div class="look-stripe" style="background:${escapeHtml(primaryColor)}"></div>
+      <div class="look-stripe look-stripe--accent" style="background:${escapeHtml(accentColor)};margin-top:3px"></div>
+      <div class="look-text-preview" style="color:${escapeHtml(textColor)}${headingFont ? `;font-family:'${escapeHtml(headingFont)}',sans-serif` : ''}">Aa</div>
+    </div>
+    <div class="look-name">${look.emoji} ${escapeHtml(look.name)}</div>
+  </button>`;
+}
+
+function renderLooksPanel(): string {
+  const customSection = _customLooks.length ? `
+    <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:6px">Captured from your site</div>
+    <div class="looks-grid" style="margin-bottom:12px">
+      ${_customLooks.map(renderLookCard).join('')}
+    </div>` : '';
+
+  return `<div style="padding:6px 8px">
+    <div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;line-height:1.6">
+      Pick a visual style. It updates colors and fonts across the whole site instantly.
+    </div>
+    ${customSection}
+    <div class="looks-grid">
+      ${LOOKS.map(renderLookCard).join('')}
+    </div>
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Font Pairings</div>
+      <div class="font-pairs-grid">
+        ${FONT_PAIRS.map(pair => `<button class="font-pair-card" data-heading="${escapeHtml(pair.heading)}" data-body="${escapeHtml(pair.body)}" title="${escapeHtml(pair.desc)}">
+          <div class="font-pair-aa" style="font-family:'${escapeHtml(pair.heading)}',sans-serif">Aa</div>
+          <div class="font-pair-body" style="font-family:'${escapeHtml(pair.body)}',sans-serif">Body text</div>
+          <div class="font-pair-name">${escapeHtml(pair.name)}</div>
+        </button>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Semantic aliases for each Look variable name — tried in order when exact match fails.
+const LOOK_ALIASES: Record<string, string[]> = {
+  '--color-primary':    ['--primary','--brand','--brand-color','--clr-primary','--main','--cta','--link-color','--color-brand'],
+  '--color-accent':     ['--accent','--color-accent','--highlight','--clr-accent','--color-highlight','--btn-color'],
+  '--color-bg':         ['--background','--bg','--page-bg','--body-bg','--surface','--background-color','--color-background','--clr-bg','--site-bg'],
+  '--color-bg-alt':     ['--bg-alt','--bgAlt','--bg-secondary','--surface-alt','--color-bg-secondary','--section-bg','--card-bg'],
+  '--color-text':       ['--text','--foreground','--body-color','--text-color','--copy','--clr-text','--fg','--color-body'],
+  '--color-text-muted': ['--text-muted','--textMuted','--text-secondary','--muted','--color-muted','--clr-muted','--text-dim'],
+  '--font-heading':     ['--heading-font','--font-display','--font-title','--ff-heading','--type-heading','--display-font'],
+  '--font-body':        ['--body-font','--font-text','--font-sans','--ff-body','--type-body','--text-font','--font-ui'],
+};
+
+/** Strip quotes and take the first font name: "'Merriweather', serif" → "Merriweather" */
+function extractFontName(v: string): string {
+  return v.replace(/['"]/g, '').split(',')[0].trim();
+}
+
+/**
+ * Propagate Look colors/fonts to every block's per-block settings.
+ * Skips only settings explicitly unlinked by the user.
+ */
+function propagateThemeColors(newTheme: Theme): void {
+  const page = visual.activePage;
+  if (!page) return;
+  for (const block of page.blocks) {
+    const def = BLOCK_DEFS[block.type];
+    if (!def) continue;
+    const newDef = def.defaultSettings(newTheme);
+    for (const key of Object.keys(newDef)) {
+      if (block.unlinked?.includes(key)) continue; // user explicitly unlinked
+      if (newDef[key] !== undefined) block.settings[key] = newDef[key];
+    }
+  }
+}
+
+function applyLook(lookId: string): void {
+  const look = [..._customLooks, ...LOOKS].find(l => l.id === lookId);
+  if (!look) return;
+
+  const v = look.vars;
+
+  // ── Block-based page: update visual.theme and re-render ──────────────
+  // Block pages render via srcdoc using themeCSS() — the external CSS file is
+  // never loaded by them. Looks must change visual.theme, not dmCssContent.
+  if (visual.activePage && visual.activePage.blocks.length > 0) {
+    const unl = _unlinkedThemeFields; // alias for brevity
+    if (v['--color-primary']    && !unl.has('primary'))     visual.theme.primary     = v['--color-primary'];
+    if (v['--color-accent']     && !unl.has('accent'))      visual.theme.accent      = v['--color-accent'];
+    if (v['--color-bg']         && !unl.has('bg'))          visual.theme.bg          = v['--color-bg'];
+    if (v['--color-bg-alt']     && !unl.has('bgAlt'))       visual.theme.bgAlt       = v['--color-bg-alt'];
+    if (v['--color-text']       && !unl.has('text'))        visual.theme.text        = v['--color-text'];
+    if (v['--color-text-muted'] && !unl.has('textMuted'))   visual.theme.textMuted   = v['--color-text-muted'];
+    if (v['--font-heading']     && !unl.has('headingFont')) visual.theme.headingFont = extractFontName(v['--font-heading']);
+    if (v['--font-body']        && !unl.has('bodyFont'))    visual.theme.bodyFont    = extractFontName(v['--font-body']);
+    if (v['--radius']           && !unl.has('radius'))      visual.theme.radius      = v['--radius'];
+    propagateThemeColors(visual.theme);
+    onThemeChange();
+    return;
+  }
+
+  // ── Raw HTML page: update CSS variables in the loaded CSS file ────────
+  const assigned = new Set<string>(); // user var names already claimed by a Look var
+  const updates: Array<{ entry: CssVariable; newValue: string }> = [];
+  const injects: Array<{ name: string; value: string }> = [];
+
+  for (const [lookName, lookValue] of Object.entries(look.vars)) {
+    // 1. Exact name match
+    let idx = dmCssVars.light.findIndex(v => v.name === lookName && !assigned.has(v.name));
+    if (idx >= 0) { updates.push({ entry: dmCssVars.light[idx], newValue: lookValue }); assigned.add(dmCssVars.light[idx].name); continue; }
+
+    // 2. Known semantic alias
+    const aliases = LOOK_ALIASES[lookName] ?? [];
+    for (const alias of aliases) {
+      idx = dmCssVars.light.findIndex(v => v.name === alias && !assigned.has(v.name));
+      if (idx >= 0) break;
+    }
+    if (idx >= 0 && !assigned.has(dmCssVars.light[idx].name)) {
+      updates.push({ entry: dmCssVars.light[idx], newValue: lookValue }); assigned.add(dmCssVars.light[idx].name); continue;
+    }
+
+    // 3. Type-based inference: find the first unassigned var of the same semantic type
+    const lookType  = guessVarType(lookName, lookValue);
+    const lookGroup = getSemanticGroup(lookName, lookValue);
+    // Prefer same semantic group (brand/text/backgrounds/typography), then same type
+    idx = dmCssVars.light.findIndex(v => !assigned.has(v.name) && getSemanticGroup(v.name, v.value) === lookGroup);
+    if (idx < 0) idx = dmCssVars.light.findIndex(v => !assigned.has(v.name) && guessVarType(v.name, v.value) === lookType);
+    if (idx >= 0) {
+      updates.push({ entry: dmCssVars.light[idx], newValue: lookValue }); assigned.add(dmCssVars.light[idx].name); continue;
+    }
+
+    // 4. No match — inject as a new variable without triggering per-variable side effects
+    injects.push({ name: lookName, value: lookValue });
+  }
+
+  // Apply updates
+  for (const { entry, newValue } of updates) {
+    const old = entry.value; entry.value = newValue;
+    dmCssContent = updateCssVariableInContent(dmCssContent, entry.name, old, newValue, false);
+  }
+
+  // Inject new variables directly into :root (bypass addVariable to keep batching)
+  for (const { name, value } of injects) {
+    if (dmCssContent.includes(':root')) {
+      dmCssContent = dmCssContent.replace(/(:root\s*\{)/, `$1\n  ${name}: ${value};`);
+    } else {
+      dmCssContent = `:root {\n  ${name}: ${value};\n}\n\n` + dmCssContent;
+    }
+  }
+
+  // Single live-inject after all changes
+  dmCssVars = parseCssVariables(dmCssContent);
+  dmSetCssLive(dmCssContent);
+  syncVarTimer();
+  const dirtyEl = _sidebarCssContainer?.querySelector<HTMLElement>('#dm-css-dirty');
+  if (dirtyEl) dirtyEl.style.display = 'inline';
+}
+
+function applyFontPair(heading: string, body: string): void {
+  const headingVal = `'${heading}', sans-serif`;
+  const bodyVal = `'${body}', sans-serif`;
+  const headIdx = dmCssVars.light.findIndex(v => v.name === '--font-heading');
+
+  if (headIdx >= 0) {
+    applyVarChange(headIdx, headingVal, false);
+  } else {
+    addVariable('font', '--font-heading', headingVal, false);
+  }
+  // Re-read index after potential addVariable
+  const bodyIdx2 = dmCssVars.light.findIndex(v => v.name === '--font-body');
+  if (bodyIdx2 >= 0) {
+    applyVarChange(bodyIdx2, bodyVal, false);
+  } else {
+    addVariable('font', '--font-body', bodyVal, false);
+  }
+  dmCssVars = parseCssVariables(dmCssContent);
+  dmSetCssLive(dmCssContent);
+}
+
+// ── Color Palette Generator ───────────────────────────────────────────
+
+function hexToHsl(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l * 100];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h * 360, s * 100, l * 100];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  h = ((h % 360) + 360) % 360;
+  s = Math.max(0, Math.min(100, s)) / 100;
+  l = Math.max(0, Math.min(100, l)) / 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function generatePalette(primaryHex: string): { primary: string; accent: string; text: string; bg: string; surface: string } {
+  // Guard against invalid hex (e.g. rgb() values or empty string) — return safe defaults
+  if (!/^#[0-9a-fA-F]{6}$/.test(primaryHex)) {
+    return { primary: primaryHex, accent: '#6366f1', text: '#1e293b', bg: '#f8fafc', surface: '#f1f5f9' };
+  }
+  const [h, s, l] = hexToHsl(primaryHex);
+  return {
+    primary: primaryHex,
+    accent: hslToHex((h + 30) % 360, Math.min(s, 90), Math.max(l, 40)),
+    text: hslToHex(h, Math.min(s * 0.2, 20), 12),
+    bg: hslToHex(h, Math.min(s * 0.08, 8), 98),
+    surface: hslToHex(h, Math.min(s * 0.06, 6), 94),
+  };
+}
+
+let palettePreviewHex: string | null = null;
+
+function renderPalettePreview(): string {
+  if (!palettePreviewHex) return '';
+  const p = generatePalette(palettePreviewHex);
+  return `<div class="palette-section">
+    <div class="palette-preview">
+      <div class="palette-swatch" style="background:${escapeHtml(p.primary)}" title="Primary"></div>
+      <div class="palette-swatch" style="background:${escapeHtml(p.accent)}" title="Accent"></div>
+      <div class="palette-swatch" style="background:${escapeHtml(p.text)}" title="Text"></div>
+      <div class="palette-swatch" style="background:${escapeHtml(p.bg)}" title="Background"></div>
+      <div class="palette-swatch" style="background:${escapeHtml(p.surface)}" title="Surface"></div>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      <button class="pp-seg-btn palette-apply" style="flex:1;font-size:10px;padding:4px">Apply to site</button>
+      <button class="pp-seg-btn palette-dismiss" style="flex:0 0 auto;padding:4px 8px;font-size:10px">Dismiss</button>
+    </div>
+  </div>`;
+}
+
+function applyPalette(primaryHex: string): void {
+  const p = generatePalette(primaryHex);
+  const mapping: [string, string][] = [
+    ['--color-primary', p.primary],
+    ['--color-bg', p.bg],
+    ['--color-text', p.text],
+  ];
+  // Try --color-surface or --color-surface-alt
+  const surfaceIdx = dmCssVars.light.findIndex(v => /surface/.test(v.name));
+  if (surfaceIdx >= 0) mapping.push([dmCssVars.light[surfaceIdx].name, p.surface]);
+
+  // Also try accent
+  const accentIdx = dmCssVars.light.findIndex(v => /accent/.test(v.name));
+  if (accentIdx >= 0) mapping.push([dmCssVars.light[accentIdx].name, p.accent]);
+
+  for (const [varName, val] of mapping) {
+    const idx = dmCssVars.light.findIndex(v => v.name === varName);
+    if (idx >= 0) applyVarChange(idx, val, false);
+  }
+  palettePreviewHex = null;
+}
+
+// ── Design Consistency Check ──────────────────────────────────────────
+
+interface DesignIssue { severity: 'warn' | 'info'; message: string; suggestion: string; }
+
+function getContrastRatio(hex1: string, hex2: string): number {
+  // Normalize 3-digit hex (#abc → #aabbcc) before slicing
+  const expand = (h: string) =>
+    h.length === 4 ? `#${h[1]}${h[1]}${h[2]}${h[2]}${h[3]}${h[3]}` : h;
+  const luminance = (hex: string) => {
+    const h = expand(hex);
+    const r = parseInt(h.slice(1, 3), 16) / 255;
+    const g = parseInt(h.slice(3, 5), 16) / 255;
+    const b = parseInt(h.slice(5, 7), 16) / 255;
+    const toLinear = (c: number) => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    return 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  };
+  const l1 = luminance(hex1), l2 = luminance(hex2);
+  const lighter = Math.max(l1, l2), darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function checkDesignConsistency(): DesignIssue[] {
+  const issues: DesignIssue[] = [];
+
+  // 1. Too many unique colors in CSS rules
+  const colors = new Set<string>();
+  dmCssParsed.forEach(r => r.props.forEach(p => {
+    if (/(color|background)/i.test(p.prop) && valueToHex(p.value)) colors.add(valueToHex(p.value)!);
+  }));
+  if (colors.size > 8) issues.push({ severity:'warn', message:`${colors.size} different colors used`, suggestion:'Aim for 4-6 colors for a cohesive look' });
+
+  // 2. Color contrast check for common text/bg pairs
+  const textVars = dmCssVars.light.filter(v => /text|body|copy/.test(v.name));
+  const bgVars   = dmCssVars.light.filter(v => /bg|background|surface/.test(v.name));
+  textVars.forEach(tv => bgVars.forEach(bv => {
+    const tvHex = valueToHex(tv.value);
+    const bvHex = valueToHex(bv.value);
+    if (!tvHex || !bvHex) return;
+    const ratio = getContrastRatio(tvHex, bvHex);
+    if (ratio < 4.5) issues.push({ severity:'warn', message:`Low contrast: ${tv.name} on ${bv.name} (${ratio.toFixed(1)}:1)`, suggestion:'WCAG AA requires at least 4.5:1 for normal text' });
+  }));
+
+  // 3. No font variables set
+  if (!dmCssVars.light.some(v => /font|family/.test(v.name))) {
+    issues.push({ severity:'info', message:'No font variables set', suggestion:'Add font variables for consistent typography across sections' });
+  }
+
+  return issues;
+}
+
+let designCheckResults: DesignIssue[] | null = null;
+
 // ── Variables Panel HTML ──────────────────────────────────────────────
 
 function renderVarCard(idx: number, name: string, value: string, isDk: boolean): string {
@@ -608,19 +1251,43 @@ function renderVariablesPanel(): string {
   ORDER.forEach(g => groups.set(g, []));
   vars.forEach((v, idx) => groups.get(getSemanticGroup(v.name, v.value))!.push({ idx, name: v.name, value: v.value }));
 
+  // Palette generator button (shown in the Brand Colors group header area)
+  const primaryVar = dmCssVars.light.find(v => /primary/.test(v.name));
+  const paletteBtn = primaryVar ? `<button class="css-add-var-btn" id="css-gen-palette-btn" style="margin-top:4px" title="Generate a full color palette from your primary color">&#10024; Generate palette</button>` : '';
+
   const groupsHtml = ORDER.map(group => {
     const items = groups.get(group)!;
     if (!items.length) return '';
     const { icon, label, desc, addType } = SEMANTIC_META[group];
+    const extraAfterHeader = group === 'brand' ? `${paletteBtn}${renderPalettePreview()}` : '';
     return `<div class="css-var-group">
       <div class="css-var-group-hd">${icon} ${label}</div>
       <div class="css-var-group-desc">${desc}</div>
+      ${extraAfterHeader}
       ${items.map(({ idx, name, value }) => renderVarCard(idx, name, value, isDk)).join('')}
       <button class="css-var-add" data-add-type="${addType}" data-dark="${dk}">+ Add ${label.toLowerCase().replace(/s$/, '').replace(/ &.*/, '')} variable</button>
     </div>`;
   }).join('');
 
-  return `${modeTabs}${groupsHtml}<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;padding-top:8px;border-top:1px solid var(--border)">${addBtn}${darkBtn}</div>`;
+  // Design check results
+  const designCheckHtml = designCheckResults !== null
+    ? `<div class="design-check-results" style="margin-top:8px">
+        ${designCheckResults.length === 0
+          ? '<div style="font-size:11px;color:var(--green);padding:8px 0;text-align:center">All checks passed!</div>'
+          : designCheckResults.map(issue => `<div class="design-check-item ${escapeHtml(issue.severity)}">
+              <span class="design-check-icon">${issue.severity === 'warn' ? '⚠️' : 'ℹ️'}</span>
+              <div class="design-check-body">
+                <div class="design-check-msg">${escapeHtml(issue.message)}</div>
+                <div class="design-check-suggestion">${escapeHtml(issue.suggestion)}</div>
+              </div>
+            </div>`).join('')}
+      </div>`
+    : '';
+
+  // TODO: Section Style Variants — future enhancement for per-section style overrides
+  const designCheckBtn = `<button class="css-add-var-btn" id="css-design-check-btn" style="margin-top:4px">&#128269; Check design</button>`;
+
+  return `${modeTabs}${groupsHtml}<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;padding-top:8px;border-top:1px solid var(--border)">${addBtn}${darkBtn}${designCheckBtn}${designCheckHtml}</div>`;
 }
 
 // ── Variable change helpers ───────────────────────────────────────────
@@ -902,13 +1569,32 @@ function renderDmCssPanel(): string {
   const dirty   = `<span id="dm-css-dirty" style="display:none;color:var(--orange);font-size:10px">●</span>`;
   const BACK_SVG = `<svg viewBox="0 0 16 16" fill="currentColor" width="10"><path d="M7.78 12.53a.75.75 0 0 1-1.06 0L2.47 8.28a.75.75 0 0 1 0-1.06l4.25-4.25a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L4.81 7h7.44a.75.75 0 0 1 0 1.5H4.81l2.97 2.97a.75.75 0 0 1 0 1.06Z"/></svg>`;
 
-  const tabBar = `<div class="css-panel-tabs"><button class="css-tab${dmCssPanelView==='variables'?' active':''}" data-tab="variables">Variables</button><button class="css-tab${dmCssPanelView==='rules'?' active':''}" data-tab="rules">Rules</button></div>`;
+  const tabBar = `<div class="css-panel-tabs"><button class="css-tab${dmCssPanelView==='variables'?' active':''}" data-tab="variables">Variables</button><button class="css-tab${dmCssPanelView==='looks'?' active':''}" data-tab="looks">Looks</button><button class="css-tab${dmCssPanelView==='rules'?' active':''}" data-tab="rules">Rules</button></div>`;
 
-  if (!dmCssPath && !dmCssContent) return `<div id="dm-css-panel">${tabBar}<div style="padding:8px"><div class="css-empty-msg">Loading…</div></div></div>`;
+  // Still awaiting first load — show spinner
+  if (!dmCssInitialized) return `<div id="dm-css-panel">${tabBar}<div style="padding:16px 12px;text-align:center"><div class="css-empty-msg">Loading\u2026</div></div></div>`;
+
+  // Init complete but no CSS file found in repo
+  if (!dmCssPath && !dmCssContent) return `<div id="dm-css-panel">${tabBar}<div style="padding:16px 12px;text-align:center"><div style="font-size:12px;color:var(--text-dim);line-height:1.6;margin-bottom:12px">No CSS file found in this repository.</div><button id="dm-css-create-btn" class="btn btn-secondary" style="font-size:11px;padding:4px 12px">+ Create style.css</button></div></div>`;
+
+  // ── Looks view ──
+  if (dmCssPanelView === 'looks') {
+    return `<div id="dm-css-panel">${tabBar}${renderLooksPanel()}<div style="display:flex;justify-content:flex-end;padding:0 8px 4px">${dirty}</div></div>`;
+  }
 
   // ── Variables view ──
   if (dmCssPanelView === 'variables') {
-    return `<div id="dm-css-panel">${tabBar}<div id="dm-css-vars-content" style="padding:6px 8px">${renderVariablesPanel()}</div><div style="display:flex;justify-content:flex-end;padding:0 8px 4px">${dirty}</div></div>`;
+    // When CSS exists but has no detected CSS variables, offer to convert
+    const noVars = dmCssVars.light.length === 0;
+    const convertBanner = noVars
+      ? `<div style="background:rgba(99,102,241,.07);border:1px solid rgba(99,102,241,.2);border-radius:6px;padding:10px 12px;margin-bottom:8px;font-size:11px;line-height:1.6;color:var(--text-secondary)">
+           No CSS variables detected — this CSS uses hardcoded colors.<br>
+           <button id="dm-css-convert-btn" class="btn btn-secondary" style="margin-top:6px;font-size:11px;padding:3px 10px">
+             ✦ Convert to theme variables
+           </button>
+         </div>`
+      : '';
+    return `<div id="dm-css-panel">${tabBar}<div id="dm-css-vars-content" style="padding:6px 8px">${convertBanner}${renderVariablesPanel()}</div><div style="display:flex;justify-content:flex-end;padding:0 8px 4px">${dirty}</div></div>`;
   }
 
   // ── Rules view ──
@@ -1358,17 +2044,172 @@ function bindVariablesPanelEvents(cp: HTMLElement, navigateFn: () => void): void
 
   // + Add dark mode
   cp.querySelector('#css-add-dark-btn')?.addEventListener('click', () => { addDarkModeToCSS(); navigateFn(); });
+
+  // Generate palette
+  cp.querySelector('#css-gen-palette-btn')?.addEventListener('click', () => {
+    const primaryVar = dmCssVars.light.find(v => /primary/.test(v.name));
+    if (primaryVar) {
+      const hex = valueToHex(primaryVar.value);
+      if (hex) { palettePreviewHex = hex; navigateFn(); }
+    }
+  });
+
+  // Palette apply / dismiss
+  cp.querySelector('.palette-apply')?.addEventListener('click', () => {
+    if (palettePreviewHex) applyPalette(palettePreviewHex);
+    navigateFn();
+  });
+  cp.querySelector('.palette-dismiss')?.addEventListener('click', () => { palettePreviewHex = null; navigateFn(); });
+
+  // Design check
+  cp.querySelector('#css-design-check-btn')?.addEventListener('click', () => {
+    designCheckResults = checkDesignConsistency();
+    navigateFn();
+  });
+}
+
+/**
+ * Collect the best CSS source for the active page.
+ * Priority: already-loaded CSS file → <link rel="stylesheet"> in openTabs → inline <style> tags
+ */
+function gatherPageCss(): string {
+  // 1. Already-loaded CSS file (covers "Convert to variables" path when file is open)
+  if (dmCssContent.trim()) return dmCssContent;
+
+  const page = visual.activePage;
+  if (!page) return '';
+  const htmlTab = state.openTabs.find(t => t.path === page.path);
+  if (!htmlTab) return '';
+
+  // 2. Linked external CSS via <link rel="stylesheet" href="...">
+  const linkRe = /<link[^>]+rel=["']stylesheet["'][^>]*href=["']([^"']+)["']/gi;
+  let lm;
+  while ((lm = linkRe.exec(htmlTab.content)) !== null) {
+    const href = lm[1];
+    const base = page.path.includes('/') ? page.path.slice(0, page.path.lastIndexOf('/') + 1) : '';
+    const resolved = href.startsWith('/') || /^https?:/.test(href)
+      ? href.replace(/^\//, '')
+      : base + href;
+    const cssTab = state.openTabs.find(t => t.path === resolved);
+    if (cssTab?.content.trim()) return cssTab.content;
+  }
+
+  // 3. Inline <style> tags
+  const styles: string[] = [];
+  const styleRe = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+  let sm;
+  while ((sm = styleRe.exec(htmlTab.content)) !== null) styles.push(sm[1]);
+  return styles.join('\n\n');
+}
+
+async function runCssConversion(targetPath: string, navigateFn: () => void): Promise<void> {
+  // Clear stale custom looks if the user switched repos since the last conversion
+  const currentRepo = `${state.owner}/${state.repo}`;
+  if (_customLooksRepo && _customLooksRepo !== currentRepo) _customLooks = [];
+  _customLooksRepo = currentRepo;
+
+  const sourceCss = gatherPageCss();
+  const { convertCssToTheme } = await import('./css-theme-converter');
+
+  if (!sourceCss.trim()) {
+    const blank = `/* Site styles */\n\nbody {\n  font-family: system-ui, sans-serif;\n  margin: 0;\n}\n`;
+    _applyConvertedCss(targetPath, blank);
+    navigateFn();
+    import('../ui/notifications').then(({ notify }) => notify('No CSS found — created blank style.css', 'info'));
+    return;
+  }
+
+  const result = convertCssToTheme(sourceCss);
+
+  if (result.stats.colorsReplaced === 0) {
+    _applyConvertedCss(targetPath, result.convertedCss);
+    navigateFn();
+    import('../ui/notifications').then(({ notify }) =>
+      notify('No colors found — saved CSS with empty theme block', 'info'));
+    return;
+  }
+
+  // Upsert "Original" Look (prevent duplicates on repeated conversions)
+  const origId = 'original-captured';
+  const origLook: Look = {
+    id:          origId,
+    name:        'Original',
+    emoji:       '◎',
+    description: 'Colors captured from your imported CSS — click to revert',
+    vars:        result.originalLook.vars,
+  };
+  const origIdx = _customLooks.findIndex(l => l.id === origId);
+  if (origIdx >= 0) _customLooks[origIdx] = origLook;
+  else _customLooks.unshift(origLook);
+
+  _applyConvertedCss(targetPath, result.convertedCss);
+
+  // Navigate to Looks tab so user immediately sees "Original" — single navigateFn call
+  dmCssPanelView = 'looks';
+  navigateFn();
+
+  const { colorsReplaced, uniqueColors } = result.stats;
+  import('../ui/notifications').then(({ notify }) =>
+    notify(`Converted ${colorsReplaced} values (${uniqueColors} unique colors) → CSS variables. "Original" Look saved.`, 'success'));
+}
+
+/** Apply converted CSS to module state + open tab. Callers call navigateFn themselves. */
+function _applyConvertedCss(path: string, css: string): void {
+  dmCssPath    = path;
+  dmCssContent = css;
+  dmCssParsed  = parseCss(css);
+  dmCssVars    = parseCssVariables(css);
+
+  const existing = state.openTabs.find(t => t.path === path);
+  if (existing) { existing.content = css; existing.dirty = true; }
+  else state.openTabs.push({ path, content: css, sha: '', dirty: true, language: 'css' });
+
+  if (!state.tree.some(t => t.path === path)) {
+    state.tree.push({ path, type: 'blob', sha: '' });
+  }
+
+  dmSetCssLive(css);
+  import('./canvas').then(({ updateVisualSaveBtn }) => { visual.dirty = true; updateVisualSaveBtn(); });
 }
 
 function bindCssPanelEvents(cp: HTMLElement, navigateFn: () => void): void {
-  // Tab switching (Variables ↔ Rules)
+  // "Create style.css" — extract & convert from page's existing CSS
+  cp.querySelector<HTMLElement>('#dm-css-create-btn')?.addEventListener('click', () => {
+    void runCssConversion('style.css', navigateFn);
+  });
+
+  // "Convert to theme variables" — for CSS files that exist but have no vars
+  cp.querySelector<HTMLElement>('#dm-css-convert-btn')?.addEventListener('click', () => {
+    if (dmCssPath) void runCssConversion(dmCssPath, navigateFn);
+  });
+
+  // Tab switching (Variables | Looks | Rules)
   cp.querySelectorAll<HTMLElement>('.css-tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      dmCssPanelView = tab.dataset.tab as 'variables' | 'rules';
+      dmCssPanelView = tab.dataset.tab as 'variables' | 'looks' | 'rules';
       dmCssActiveRule = null; // always return to list view when switching tabs
       navigateFn();
     });
   });
+
+  // Looks panel events
+  if (dmCssPanelView === 'looks') {
+    cp.querySelectorAll<HTMLElement>('.look-card').forEach(card => {
+      card.addEventListener('click', () => {
+        applyLook(card.dataset.lookId!);
+        navigateFn();
+      });
+    });
+    cp.querySelectorAll<HTMLElement>('.font-pair-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const heading = card.dataset.heading;
+        const body    = card.dataset.body;
+        if (heading && body) applyFontPair(heading, body);
+        navigateFn();
+      });
+    });
+    return;
+  }
 
   // Variables panel events (if visible)
   if (dmCssPanelView === 'variables') { bindVariablesPanelEvents(cp, navigateFn); return; }
@@ -1601,6 +2442,24 @@ function _renderSidebarCss(): void {
 export async function initSidebarCssPanel(container: HTMLElement): Promise<void> {
   _sidebarCssContainer = container;
 
+  // Wire CSS undo restore — allows canvas.ts to call back into properties when
+  // the user presses Ctrl+Z on a CSS snapshot
+  import('./canvas').then(({ registerCssRestoreHandler }) => {
+    registerCssRestoreHandler((restoredContent: string) => {
+      dmCssContent = restoredContent;
+      dmCssParsed  = parseCss(restoredContent);
+      dmCssVars    = parseCssVariables(restoredContent);
+      dmSetCssLive(restoredContent);
+      // Sync code tab
+      const tab = state.openTabs.find(t => t.path === dmCssPath);
+      if (tab) { tab.content = restoredContent; tab.dirty = true; }
+      import('../preview-sw-client').then(({ cacheFileInSW }) => {
+        if (dmCssPath) cacheFileInSW(dmCssPath, restoredContent);
+      });
+      _renderSidebarCss();
+    });
+  });
+
   // Re-sync if CSS was edited in code mode
   if (dmCssPath !== null) {
     const tab = state.openTabs.find(t => t.path === dmCssPath);
@@ -1613,6 +2472,7 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
         console.warn('[css-panel] Parse error after code-mode sync:', e);
       }
     }
+    dmCssInitialized = true;
     _renderSidebarCss();
     return;
   }
@@ -1642,5 +2502,6 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
   dmCssActiveRule = null;
   dmCssPanelView  = 'rules';
   dmCssVarsDark   = false;
+  dmCssInitialized = true;
   _renderSidebarCss();
 }

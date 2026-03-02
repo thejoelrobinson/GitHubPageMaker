@@ -10,6 +10,19 @@ export function escapeHtml(str: unknown): string {
     .replace(/`/g, '&#96;');
 }
 
+/**
+ * Escape HTML then render inline markdown (**bold** and *italic*).
+ * Collapses adjacent bold markers (****) that arise when document
+ * extractors split a single bold run into multiple adjacent spans.
+ * Use for long-form body text fields; not for headings or UI strings.
+ */
+export function renderInlineMarkdown(str: unknown): string {
+  return escapeHtml(str)
+    .replace(/\*{4}/g, '')                              // **** → merge adjacent bold spans
+    .replace(/\*\*(.+?)\*\*/gs, '<strong>$1</strong>')  // **bold**
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');          // *italic*
+}
+
 /** Escape a value for use inside an HTML attribute (handles both quote styles). */
 export function escapeAttr(str: unknown): string {
   return String(str)
