@@ -1,0 +1,7 @@
+python-pptx
+python-docx
+pdfplumber
+jinja2
+beautifulsoup4
+pillow
+markdown
