@@ -10,13 +10,16 @@ import { uploadFile } from '../github';
 import { notify } from '../ui/notifications';
 import { titleToPath } from '../utils';
 import { pdfExtract, pptxExtract, docxExtract } from './doc-extract';
-import type { ImageAsset } from './content-extract';
+import type { ExtractedTable, ExtractedSlide } from './doc-extract';
+import type { ImageAsset, AssembledBlock, BlockPrefill } from './content-extract';
 import { registerLocalAsset } from './local-asset-registry';
 import { cacheFileInSW, isPreviewSWReady } from '../preview-sw-client';
 import { analyzeContent, assembleBlocks } from './content-extract';
+import { assembleBlocksFromSlides } from './slide-blocks';
 import { addEmptyPage, switchPage } from './pages';
 import { addBlockAfter, renderCanvas } from './canvas';
 import { renderSectionList, renderPageList } from './pages';
+import type { NavLink } from '../types';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -236,6 +239,170 @@ function renderProgressSteps(active: number, error?: string): void {
   }).join('');
 }
 
+// ── Multi-page grouping ──────────────────────────────────────────────────────
+
+/** Minimum content blocks (excluding nav/footer/hero) before we split into pages. */
+const MULTI_PAGE_THRESHOLD = 8;
+
+interface PageGroup {
+  path: string;
+  title: string;
+  isHome: boolean;
+  blocks: AssembledBlock[];
+}
+
+/** Keyword sets for classifying blocks into pages (case-insensitive title match). */
+const ABOUT_KEYWORDS = /\b(about|story|history|mission|vision|background|team|people|who we are|our story)\b/i;
+const SERVICES_KEYWORDS = /\b(services|products|offerings|solutions|what we do|features|capabilities)\b/i;
+const CONTACT_KEYWORDS = /\b(contact|reach|location|get in touch|connect)\b/i;
+
+/**
+ * Classify a block into a page category based on its sectionTitle and block type.
+ * Returns 'home' | 'about' | 'services' | 'contact'.
+ */
+function classifyBlockPage(block: AssembledBlock): string {
+  const title = (block.sectionTitle ?? '').toLowerCase();
+
+  // Structural blocks are handled separately (nav, footer, hero)
+  if (block.type === 'nav' || block.type === 'footer') return '_structural';
+  if (block.type === 'hero' || title === '_hero') return 'home';
+
+  // Try keyword matching on sectionTitle
+  if (title && ABOUT_KEYWORDS.test(title)) return 'about';
+  if (title && SERVICES_KEYWORDS.test(title)) return 'services';
+  if (title && CONTACT_KEYWORDS.test(title)) return 'contact';
+
+  // Fall back to block type signals
+  if (block.type === 'form') return 'contact';
+  if (block.type === 'testimonial' || title === '_testimonial') return 'home';
+  if (block.type === 'stats' || title === '_stats') return 'home';
+  if (block.type === 'cta' || title === '_cta') return 'home';
+  if (block.type === 'gallery' || title === '_gallery') return 'home';
+
+  // Default: uncategorized → home
+  return 'home';
+}
+
+/**
+ * Group assembled blocks into multiple pages when the document is large.
+ * If total content blocks (non-structural) are <= MULTI_PAGE_THRESHOLD,
+ * returns null to signal single-page behavior.
+ */
+function groupBlocksIntoPages(
+  allBlocks: AssembledBlock[],
+  pageTitle: string,
+): PageGroup[] | null {
+  // Count content blocks (everything except nav and footer)
+  const contentBlocks = allBlocks.filter(b => b.type !== 'nav' && b.type !== 'footer');
+  // Exclude hero from the count since it always goes on home
+  const countableBlocks = contentBlocks.filter(b => b.type !== 'hero');
+
+  if (countableBlocks.length <= MULTI_PAGE_THRESHOLD) return null;
+
+  // Extract the nav and footer templates for reuse
+  const navBlock = allBlocks.find(b => b.type === 'nav');
+  const footerBlock = allBlocks.find(b => b.type === 'footer');
+
+  // Classify each content block
+  const buckets: Record<string, AssembledBlock[]> = {
+    home: [],
+    about: [],
+    services: [],
+    contact: [],
+  };
+
+  for (const block of contentBlocks) {
+    const category = classifyBlockPage(block);
+    if (category === '_structural') continue; // nav/footer handled separately
+    if (buckets[category]) {
+      buckets[category].push(block);
+    } else {
+      buckets.home.push(block); // fallback
+    }
+  }
+
+  // Build page groups — only create a page if it has blocks
+  const pages: PageGroup[] = [];
+
+  // Home page always comes first
+  const homeBlocks: AssembledBlock[] = [];
+  if (navBlock) homeBlocks.push(navBlock);
+  homeBlocks.push(...buckets.home);
+  if (footerBlock) homeBlocks.push(footerBlock);
+  pages.push({
+    path: 'index.html',
+    title: pageTitle,
+    isHome: true,
+    blocks: homeBlocks,
+  });
+
+  // About page
+  if (buckets.about.length > 0) {
+    const aboutBlocks: AssembledBlock[] = [];
+    if (navBlock) aboutBlocks.push({ ...navBlock, prefill: buildSubpageNav(navBlock, pageTitle) });
+    aboutBlocks.push(...buckets.about);
+    if (footerBlock) aboutBlocks.push(footerBlock);
+    pages.push({
+      path: 'about.html',
+      title: 'About',
+      isHome: false,
+      blocks: aboutBlocks,
+    });
+  }
+
+  // Services page
+  if (buckets.services.length > 0) {
+    const servicesBlocks: AssembledBlock[] = [];
+    if (navBlock) servicesBlocks.push({ ...navBlock, prefill: buildSubpageNav(navBlock, pageTitle) });
+    servicesBlocks.push(...buckets.services);
+    if (footerBlock) servicesBlocks.push(footerBlock);
+    pages.push({
+      path: 'services.html',
+      title: 'Services',
+      isHome: false,
+      blocks: servicesBlocks,
+    });
+  }
+
+  // Contact page — always gets a form block if not already present
+  if (buckets.contact.length > 0) {
+    const contactBlocks: AssembledBlock[] = [];
+    if (navBlock) contactBlocks.push({ ...navBlock, prefill: buildSubpageNav(navBlock, pageTitle) });
+    contactBlocks.push(...buckets.contact);
+    if (!buckets.contact.some(b => b.type === 'form')) {
+      contactBlocks.push({
+        type: 'form',
+        prefill: { 'content.heading': 'Get in Touch', 'content.subtext': '' },
+        sectionTitle: 'Contact',
+      });
+    }
+    if (footerBlock) contactBlocks.push(footerBlock);
+    pages.push({
+      path: 'contact.html',
+      title: 'Contact',
+      isHome: false,
+      blocks: contactBlocks,
+    });
+  }
+
+  // Update the home nav links to include all generated pages
+  const navLinks: NavLink[] = pages.map(p => ({
+    text: p.isHome ? 'Home' : p.title,
+    href: p.isHome ? '/' : p.path,
+  }));
+  for (const pg of pages) {
+    const nav = pg.blocks.find(b => b.type === 'nav');
+    if (nav) nav.prefill['content.links'] = navLinks;
+  }
+
+  return pages;
+}
+
+/** Build nav prefill for a sub-page (keeps the same logo, updates links later). */
+function buildSubpageNav(navBlock: AssembledBlock, _pageTitle: string): BlockPrefill {
+  return { ...navBlock.prefill };
+}
+
 // ── Main generation flow ──────────────────────────────────────────────────────
 
 export async function runGeneration(): Promise<void> {
@@ -247,6 +414,8 @@ export async function runGeneration(): Promise<void> {
 
   const images: ImageAsset[] = [];
   const textSources: string[] = [];
+  const tables: ExtractedTable[] = [];
+  let pptxSlides: ExtractedSlide[] | null = null;
 
   // Step 0: Reading files
   try {
@@ -297,8 +466,11 @@ export async function runGeneration(): Promise<void> {
       } else if (/\.pptx?$/i.test(lower)) {
         setCurrentFile(file, 'reading slides…');
         const result = await pptxExtract(file);
-        // Prefix each slide title with ## so detectSections creates a section
-        // per slide rather than merging everything into one unstructured blob.
+        // Store structured slide data for direct slide→block mapping
+        if (result.extractedSlides && result.extractedSlides.length > 0) {
+          pptxSlides = result.extractedSlides;
+        }
+        // Also push text for backward-compat fallback
         textSources.push(...result.slides.map(s => {
           const heading = s.title ? `## ${s.title}` : '';
           return [heading, s.body].filter(Boolean).join('\n');
@@ -314,6 +486,7 @@ export async function runGeneration(): Promise<void> {
         for (const img of result.images) {
           images.push({ ...img, sizeBytes: img.base64.length * 0.75 });
         }
+        if (result.tables) tables.push(...result.tables);
       } else if (/\.(txt|md)$/i.test(lower)) {
         setCurrentFile(file, 'reading…');
         const text = await readFileAsText(file);
@@ -330,12 +503,20 @@ export async function runGeneration(): Promise<void> {
   }
 
   // Step 2: Analysing structure
-  let blocks;
+  let blocks: AssembledBlock[];
   let pageTitle = 'New Page';
   try {
-    const contentMap = analyzeContent(textSources, images);
-    pageTitle = contentMap.pageTitle;
-    blocks = assembleBlocks(contentMap);
+    if (pptxSlides && pptxSlides.length > 0) {
+      // Direct slide-to-block mapping — preserves slide structure
+      const result = assembleBlocksFromSlides(pptxSlides, images);
+      blocks = result.blocks;
+      pageTitle = result.pageTitle;
+    } else {
+      // Generic text-based analysis path (PDF, DOCX, TXT, etc.)
+      const contentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
+      pageTitle = contentMap.pageTitle;
+      blocks = assembleBlocks(contentMap, visual.theme);
+    }
     activeStep = 3;
     renderProgressSteps(activeStep);
   } catch (e) {
@@ -389,50 +570,108 @@ export async function runGeneration(): Promise<void> {
     showRetryButton(); return;
   }
 
-  // Step 4: Building page
+  // Step 4: Building page(s)
   try {
     const targetSel = document.getElementById('wizard-target-page') as HTMLSelectElement | null;
     const targetId = targetSel?.value ?? '';
 
-    let page = targetId
-      ? visual.pages.find(p => p.id === targetId) ?? null
-      : null;
+    // Try multi-page grouping if no specific target page was selected
+    const pageGroups = targetId ? null : groupBlocksIntoPages(blocks, pageTitle);
 
-    if (page) {
-      // Replace existing page's blocks
-      page.blocks = [];
-      page.dirty = true;
+    if (pageGroups && pageGroups.length > 1) {
+      // ── Multi-page generation ──────────────────────────────────────────
+      let totalBlocks = 0;
+      let firstPage: typeof visual.activePage = null;
+
+      for (const pg of pageGroups) {
+        const page = addEmptyPage(pg.title, pg.path);
+        if (pg.isHome) page.isHome = true;
+        if (!firstPage) firstPage = page;
+
+        // Set activePage so addBlockAfter targets the correct page
+        visual.activePage = page;
+
+        // Same stale-tab purge as the single-page path above.
+        const staleTabIdx = state.openTabs.findIndex(t => t.path === page.path);
+        if (staleTabIdx !== -1) state.openTabs.splice(staleTabIdx, 1);
+
+        let lastId: string | null = null;
+        for (const b of pg.blocks) {
+          await addBlockAfterAsync(lastId, b.type, b.prefill);
+          const lastBlock = page.blocks[page.blocks.length - 1];
+          lastId = lastBlock?.id ?? null;
+          totalBlocks++;
+        }
+      }
+
+      // Switch to the home page
+      if (firstPage) switchPage(firstPage.id);
+      renderCanvas();
+      renderSectionList();
+      renderPageList();
+
+      activeStep = 5;
+      renderProgressSteps(activeStep);
+
+      // Show done step
+      const doneTitle = document.getElementById('wizard-done-title');
+      const doneSummary = document.getElementById('wizard-done-summary');
+      if (doneTitle) doneTitle.textContent = `${pageGroups.length} pages created!`;
+      if (doneSummary) doneSummary.textContent =
+        `${totalBlocks} sections across ${pageGroups.length} pages` +
+        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}.`;
+
+      showStep('done');
     } else {
-      page = addEmptyPage(pageTitle, titleToPath(pageTitle, false));
+      // ── Single-page generation (original behavior) ─────────────────────
+      let page = targetId
+        ? visual.pages.find(p => p.id === targetId) ?? null
+        : null;
+
+      if (page) {
+        // Replace existing page's blocks
+        page.blocks = [];
+        page.dirty = true;
+      } else {
+        page = addEmptyPage(pageTitle, titleToPath(pageTitle, false));
+      }
+
+      // Set activePage before the block loop so addBlockAfter targets
+      // the correct page — not whatever was active before the wizard opened.
+      visual.activePage = page;
+
+      // Purge any open code tab for this page path. addBlockAfter has a guard
+      // that, when page.blocks is empty, checks for an existing raw HTML tab
+      // and converts it to blocks first — which would graft the new generated
+      // blocks onto the old page content. We're replacing the page wholesale,
+      // so the stale tab must be cleared before the first addBlockAfter call.
+      const staleTabIdx = state.openTabs.findIndex(t => t.path === page.path);
+      if (staleTabIdx !== -1) state.openTabs.splice(staleTabIdx, 1);
+
+      let lastId: string | null = null;
+      for (const b of blocks) {
+        await addBlockAfterAsync(lastId, b.type, b.prefill);
+        const lastBlock = page.blocks[page.blocks.length - 1];
+        lastId = lastBlock?.id ?? null;
+      }
+
+      switchPage(page.id);
+      renderCanvas();
+      renderSectionList();
+      renderPageList();
+
+      activeStep = 5;
+      renderProgressSteps(activeStep);
+
+      // Show done step
+      const doneTitle = document.getElementById('wizard-done-title');
+      const doneSummary = document.getElementById('wizard-done-summary');
+      if (doneTitle)   doneTitle.textContent = `"${pageTitle}" is ready!`;
+      if (doneSummary) doneSummary.textContent =
+        `${blocks.length} sections created${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}.`;
+
+      showStep('done');
     }
-
-    // *** Fix: set activePage before the block loop so addBlockAfter targets
-    //     the correct page — not whatever was active before the wizard opened.
-    visual.activePage = page;
-
-    let lastId: string | null = null;
-    for (const b of blocks) {
-      await addBlockAfterAsync(lastId, b.type, b.prefill);
-      const lastBlock = page.blocks[page.blocks.length - 1];
-      lastId = lastBlock?.id ?? null;
-    }
-
-    switchPage(page.id);
-    renderCanvas();
-    renderSectionList();
-    renderPageList();
-
-    activeStep = 5;
-    renderProgressSteps(activeStep);
-
-    // Show done step
-    const doneTitle = document.getElementById('wizard-done-title');
-    const doneSummary = document.getElementById('wizard-done-summary');
-    if (doneTitle)   doneTitle.textContent = `"${pageTitle}" is ready!`;
-    if (doneSummary) doneSummary.textContent =
-      `${blocks.length} sections created${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}.`;
-
-    showStep('done');
   } catch (e) {
     renderProgressSteps(4, (e as Error).message);
     showRetryButton(); return;

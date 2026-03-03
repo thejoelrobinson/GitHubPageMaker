@@ -19,13 +19,35 @@ export const getDmSections = (): DomSection[] => dmSections;
 export const getDmSelected = (): SelectedElement | null => dmSelected;
 
 let inspectModeActive = false;
-export const getInspectMode = (): boolean => inspectModeActive;
+let interactModeActive = false;
+export const getInspectMode  = (): boolean => inspectModeActive;
+export const getInteractMode = (): boolean => interactModeActive;
+
 export function setInspectMode(active: boolean): void {
   inspectModeActive = active;
-  getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active }, '*');
-  // Update toolbar button states
-  document.getElementById('tool-edit')?.classList.toggle('active', !active);
-  document.getElementById('tool-inspect')?.classList.toggle('active', active);
+  // Don't send inspect toggle while Interact mode owns the iframe
+  if (!interactModeActive) {
+    getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active }, '*');
+  }
+  document.getElementById('tool-inspect')?.classList.toggle('active', active && !interactModeActive);
+  if (!interactModeActive) document.getElementById('tool-edit')?.classList.remove('active');
+}
+
+export function setInteractMode(active: boolean): void {
+  interactModeActive = active;
+  getIframe()?.contentWindow?.postMessage({ type: 'wb:setInteractMode', active }, '*');
+  // Also set directly on the iframe body — postMessage is async and can be lost
+  // on page transitions. Direct DOM is instant and reliable (same-origin).
+  getIframe()?.contentDocument?.body?.classList.toggle('wb-interact', active);
+  if (active) {
+    document.getElementById('tool-edit')?.classList.add('active');    // Preview button lights up
+    document.getElementById('tool-inspect')?.classList.remove('active');
+  } else {
+    // Leaving Preview — restore Edit mode state
+    getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: inspectModeActive }, '*');
+    document.getElementById('tool-edit')?.classList.remove('active');
+    document.getElementById('tool-inspect')?.classList.toggle('active', inspectModeActive);
+  }
 }
 import { renderBlock, BLOCK_DEFS } from './blocks';
 import { generateEditingPageHTML, generatePageHTML, injectEditingLayer, WB_STYLE_ID, WB_SCRIPT_ID, WB_BASE_ID } from './export';
@@ -111,8 +133,8 @@ export function renderCanvas(afterLoad?: () => void): void {
   if (page.blocks.length === 0) {
     renderRawPage(iframe, page.path, afterLoad);
   } else {
-    // Block pages don't support inspect mode — reset silently
-    if (inspectModeActive) setInspectMode(false);
+    // Block pages: exit Preview (interact) mode on re-render, but keep Edit state
+    if (interactModeActive) setInteractMode(false);
     renderBlockPage(iframe, page, afterLoad);
   }
 }
@@ -157,7 +179,23 @@ function injectEditingLayerIntoSW(iframe: HTMLIFrameElement): void {
   // IMPORTANT: imports are sequential — CSS → toolbar → script — so that
   // the script can find the toolbar in the DOM when it initialises.
   const iDoc = iframe.contentDocument;
-  if (!iDoc || iDoc.getElementById(WB_SCRIPT_ID)) return; // already injected
+  if (!iDoc) return;
+
+  // Always re-apply mode state after the iframe loads — the initial postMessages
+  // sent in enterVisualMode() fire before the iframe is loaded, so they are lost.
+  // Use a short timeout so the iframe script's message listener is registered first.
+  const reapplyInspect  = inspectModeActive;
+  const reapplyInteract = interactModeActive;
+  setTimeout(() => {
+    if (iframe.contentDocument !== iDoc) return;
+    if (reapplyInteract) {
+      iframe.contentWindow?.postMessage({ type: 'wb:setInteractMode', active: true }, '*');
+    } else if (reapplyInspect) {
+      iframe.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: true }, '*');
+    }
+  }, 50);
+
+  if (iDoc.getElementById(WB_SCRIPT_ID)) return; // already injected — CSS/toolbar/script already present
 
   import('./export').then(({ EDITING_CSS, EDITING_TOOLBAR_HTML, EDITING_SCRIPT, WB_STYLE_ID: styleId, WB_SCRIPT_ID: scriptId }) => {
     // Bail out if the iframe navigated away while we were importing
@@ -188,14 +226,8 @@ function injectEditingLayerIntoSW(iframe: HTMLIFrameElement): void {
     script.textContent = rawJs;
     iDoc.body.appendChild(script);
 
-    // 4. Re-apply inspect mode if it was active before the page reloaded
-    if (inspectModeActive) {
-      setTimeout(() => {
-        if (iframe.contentDocument === iDoc) {
-          iframe.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: true }, '*');
-        }
-      }, 50);
-    }
+    // Mode state is re-applied by the setTimeout above (outside the early-return
+    // guard) so it runs whether the script was pre-embedded or just injected.
   });
 }
 
@@ -271,6 +303,31 @@ function renderBlockPage(iframe: HTMLIFrameElement, page: Page, afterLoad?: () =
     afterLoad?.();
     if (visual.selectedBlockId) {
       iframe.contentWindow?.postMessage({ type: 'wb:select', id: visual.selectedBlockId }, '*');
+    }
+    // Re-apply mode state — the initial setInspectMode/setInteractMode calls in
+    // enterVisualMode() fire before the iframe is loaded, so their postMessages
+    // are lost.  Re-send here so the iframe's inspectMode/interactMode variables
+    // and wb-inspect/wb-interact body classes are consistent with parent state.
+    if (interactModeActive) {
+      iframe.contentWindow?.postMessage({ type: 'wb:setInteractMode', active: true }, '*');
+    } else if (inspectModeActive) {
+      iframe.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: true }, '*');
+    }
+    // Safety-net: activate [data-field] elements directly from the parent (same-origin
+    // DOM access). This guarantees contentEditable is set even if the embedded
+    // activateFields() in the iframe script has a timing or compatibility issue.
+    if (!interactModeActive) {
+      const iDoc = iframe.contentDocument;
+      iDoc?.querySelectorAll<HTMLElement>('[data-field]').forEach(f => {
+        if (f.contentEditable !== 'true') {
+          let h = f.innerHTML;
+          h = h.replace(/<strong>([\s\S]*?)<\/strong>/gi, '**$1**');
+          h = h.replace(/<em>([\s\S]*?)<\/em>/gi, '*$1*');
+          f.innerHTML = h;
+          f.contentEditable = 'true';
+          if (!f.hasAttribute('tabindex')) f.setAttribute('tabindex', '0');
+        }
+      });
     }
   };
 
@@ -359,7 +416,20 @@ export function rerenderBlock(blockId: string): void {
   const inner = iDoc?.querySelector(`[data-block-id="${blockId}"] .wb-inner`);
   if (inner) {
     inner.innerHTML = renderBlock(block, visual.theme, true);
-    
+    // Re-activate contenteditable on the new [data-field] elements.
+    // activateFields() in the iframe only runs on initial page load; after
+    // innerHTML is replaced here we must re-enable editing ourselves.
+    if (!interactModeActive) {
+      iDoc?.querySelectorAll<HTMLElement>('[data-field]').forEach(f => {
+        if (f.contentEditable !== 'true') {
+          let h = f.innerHTML;
+          h = h.replace(/<strong>([\s\S]*?)<\/strong>/gi, '**$1**');
+          h = h.replace(/<em>([\s\S]*?)<\/em>/gi, '*$1*');
+          f.innerHTML = h;
+          f.contentEditable = 'true';
+        }
+      });
+    }
     dropCodeTab(page.path);
     return;
   }
@@ -589,11 +659,6 @@ export function updateVisualSaveBtn(): void {
   const btn = document.getElementById('vis-publish-btn') as HTMLButtonElement | null;
   const dirty = visual.dirty || visual.pages.some(p => p.dirty);
   btn?.classList.toggle('has-changes', dirty);
-  const badge = document.getElementById('vis-dirty-badge');
-  if (badge) {
-    const dirtyCount = visual.pages.filter(p => p.dirty).length;
-    badge.textContent = dirtyCount > 0 ? String(dirtyCount) : '';
-  }
 }
 
 // ── postMessage listener ───────────────────────────────────────────────
@@ -608,10 +673,10 @@ export function initCanvasEvents(): void {
 
     switch (data.type as string) {
       case 'wb:select':
-        selectBlock(data.id as string);
+        if (!interactModeActive) selectBlock(data.id as string);
         break;
       case 'wb:deselect':
-        deselectBlock();
+        if (!interactModeActive) deselectBlock();
         break;
       case 'wb:textSave': {
         const blockId = data.blockId as string;
@@ -659,6 +724,7 @@ export function initCanvasEvents(): void {
         break;
       }
       case 'wb:elementSelect': {
+        if (interactModeActive) break;
         dmSelected = {
           selector:    data.selector    as string,
           tagName:     data.tagName     as string,
@@ -674,6 +740,7 @@ export function initCanvasEvents(): void {
         break;
       }
       case 'wb:elementHover': {
+        if (interactModeActive) break;
         const hIdx = data.sectionIndex as number;
         document.querySelectorAll<HTMLElement>('.dm-section-item').forEach(item => {
           item.classList.toggle('sl-canvas-hover', Number(item.dataset.index) === hIdx);
@@ -744,8 +811,8 @@ export function initCanvasEvents(): void {
             }
             break;
           case 'editText':
-            // Switch to Edit mode so the user can type
-            setInspectMode(false);
+            // Exit Interact mode so the user can edit
+            if (interactModeActive) setInteractMode(false);
             break;
           case 'changeBackground':
             // Open the inspector and focus the background-color control

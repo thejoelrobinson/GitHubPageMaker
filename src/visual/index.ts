@@ -14,7 +14,7 @@ import { openGeneratedFile, activateTab, flushSWCacheTimers } from '../code-edit
 import {
   renderCanvas, initCanvasEvents, renderSectionPicker,
   exposeCanvasGlobals, updateVisualSaveBtn, applyThemeToCanvas,
-  exposeNavLinkGlobals, selectBlock, setInspectMode, initCanvasDragDrop,
+  exposeNavLinkGlobals, selectBlock, setInspectMode, setInteractMode, initCanvasDragDrop,
 } from './canvas';
 import { initSidebarCssPanel } from './properties';
 import { renderProperties } from './properties';
@@ -50,6 +50,8 @@ export async function enterVisualMode(): Promise<void> {
       initCssActivityButton();
       initUndoKeyboard();
       initElementsActivityButton();
+      // Render the block picker embedded in the pages panel (targets #elements-panel-body)
+      import('./canvas').then(({ renderElementsPanel }) => renderElementsPanel());
       initTemplateGallery();
       initAssetWizard();
       initPreviewButton();
@@ -63,21 +65,25 @@ export async function enterVisualMode(): Promise<void> {
   // ── Show visual UI ──
   document.getElementById('code-area')!.classList.add('hidden');
   document.getElementById('vis-area')!.classList.remove('hidden');
-  // Always show the Explorer panel when entering Visual mode so the user
-  // can confirm their repo files loaded. They can switch to Pages via the
-  // activity bar when they want to manage visual pages.
-  switchSidebarPanel('explorer');
+  // Hide activity bar (code-mode concept) — show visual tools in mode-action-bar instead
+  (document.getElementById('activity-bar') as HTMLElement).style.display = 'none';
+  (document.getElementById('vis-mode-tools') as HTMLElement).style.display = 'flex';
+  (document.getElementById('code-mode-tools') as HTMLElement).style.display = 'none';
+  // Show persistent sidebar footer (Pages/Files/CSS tabs)
+  (document.getElementById('vis-sidebar-footer') as HTMLElement).style.display = 'flex';
+  // Show pages panel — the primary visual editor view (no activity bar click needed)
+  switchSidebarPanel('pages');
 
   document.getElementById('mode-code-btn')?.classList.remove('active');
   document.getElementById('mode-vis-btn')?.classList.add('active');
-  const cssBtn = document.getElementById('act-css');
-  if (cssBtn) cssBtn.style.display = 'flex';
-  const elemBtn = document.getElementById('act-elements');
-  if (elemBtn) elemBtn.style.display = 'flex';
-  document.getElementById('pull-btn')!.style.display         = 'none';
-  document.getElementById('code-action-group')!.style.display = 'none';
+  // Default to Edit mode when entering visual mode
+  setInteractMode(false);
+  setInspectMode(true);
+
   document.getElementById('vis-action-group')!.style.display  =
     state.connected ? 'flex' : 'none';
+  // Status bar: hide code-specific items in visual mode
+  document.querySelectorAll('.status-code-only').forEach(el => el.classList.add('hidden'));
 
   visual.active = true;
   visual.mode   = 'visual';
@@ -155,20 +161,21 @@ export function enterCodeMode(): void {
 
   document.getElementById('code-area')!.classList.remove('hidden');
   document.getElementById('vis-area')!.classList.add('hidden');
-  // Activity bar and sidebar are always visible — switch to the explorer panel
+  // Show activity bar (code-mode) and hide visual tools + sidebar footer
+  (document.getElementById('activity-bar') as HTMLElement).style.display = '';
+  (document.getElementById('vis-mode-tools') as HTMLElement).style.display = 'none';
+  (document.getElementById('vis-sidebar-footer') as HTMLElement).style.display = 'none';
+  if (state.connected) {
+    (document.getElementById('code-mode-tools') as HTMLElement).style.display = 'flex';
+    (document.getElementById('code-action-group') as HTMLElement).style.display = 'flex';
+  }
   switchSidebarPanel('explorer');
 
   document.getElementById('mode-code-btn')?.classList.add('active');
   document.getElementById('mode-vis-btn')?.classList.remove('active');
-  const cssBtn2 = document.getElementById('act-css');
-  if (cssBtn2) cssBtn2.style.display = 'none';
-  const elemBtn2 = document.getElementById('act-elements');
-  if (elemBtn2) elemBtn2.style.display = 'none';
-  if (state.connected) {
-    document.getElementById('pull-btn')!.style.display          = 'flex';
-    document.getElementById('code-action-group')!.style.display = 'flex';
-  }
   document.getElementById('vis-action-group')!.style.display = 'none';
+  // Status bar: show code-specific items in code mode
+  document.querySelectorAll('.status-code-only').forEach(el => el.classList.remove('hidden'));
 
   visual.active = false;
   visual.mode   = 'code';
@@ -433,38 +440,51 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
  * Switch the unified sidebar to show a named panel and mark the matching
  * activity-bar icon as active.  Works in both Visual and Code mode.
  */
-export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css' | 'elements'): void {
-  const panels = ['pages', 'explorer', 'search', 'css', 'elements'] as const;
+export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'): void {
+  const panels = ['pages', 'explorer', 'search', 'css'] as const;
   for (const p of panels) {
     const panelEl  = document.getElementById(`panel-${p}`);
     const actIcon  = document.getElementById(`act-${p}`);
     const isActive = p === name;
     if (panelEl)  panelEl.style.display  = isActive ? 'flex'  : 'none';
     if (actIcon)  actIcon.classList.toggle('active', isActive);
-    if (isActive && panelEl) panelEl.style.flexDirection = 'column';
+    if (isActive && panelEl) { panelEl.style.flexDirection = 'column'; panelEl.style.flex = '1'; }
   }
-  // Lazy-render elements panel on first activation
-  if (name === 'elements') {
-    import('./canvas').then(({ renderElementsPanel }) => renderElementsPanel());
-  }
+  // Sync footer tab active states (visual mode only — no-ops if footer is hidden)
+  const tabMap: Partial<Record<string, string>> = {
+    pages: 'vis-pages-tab', explorer: 'vis-files-tab', css: 'vis-css-btn',
+  };
+  ['vis-pages-tab', 'vis-files-tab', 'vis-css-btn'].forEach(id =>
+    document.getElementById(id)?.classList.remove('active'),
+  );
+  const activeTab = tabMap[name];
+  if (activeTab) document.getElementById(activeTab)?.classList.add('active');
 }
 
 function initToolModeButtons(): void {
-  document.getElementById('tool-edit')?.addEventListener('click', () => setInspectMode(false));
-  document.getElementById('tool-inspect')?.addEventListener('click', () => setInspectMode(true));
-}
-
-function initElementsActivityButton(): void {
-  document.getElementById('act-elements')?.addEventListener('click', () => {
-    switchSidebarPanel('elements');
+  document.getElementById('tool-inspect')?.addEventListener('click', () => {
+    setInteractMode(false);
+    setInspectMode(true);   // Edit = text editable + element hover outlines
+  });
+  document.getElementById('tool-edit')?.addEventListener('click', () => {
+    setInteractMode(true);  // Preview = live page, normal mouse, no outlines
   });
 }
 
+function initElementsActivityButton(): void {
+  // Elements panel removed from sidebar — blocks added via "+ Add Section" modal
+}
+
 function initCssActivityButton(): void {
-  document.getElementById('act-css')?.addEventListener('click', () => {
-    switchSidebarPanel('css');
-    const container = document.getElementById('css-panel-body');
-    if (container) void initSidebarCssPanel(container);
+  document.getElementById('vis-css-btn')?.addEventListener('click', () => {
+    const isActive = document.getElementById('panel-css')?.style.display !== 'none';
+    if (isActive) {
+      switchSidebarPanel('pages');
+    } else {
+      switchSidebarPanel('css');
+      const container = document.getElementById('css-panel-body');
+      if (container) void initSidebarCssPanel(container);
+    }
   });
 }
 
@@ -496,23 +516,7 @@ function initUndoKeyboard(): void {
     }
   });
 
-  // Add undo/redo buttons to vis-toolbar after page label
-  const toolbar = document.getElementById('vis-toolbar');
-  const pageLabel = document.getElementById('vis-page-label');
-  if (toolbar && pageLabel) {
-    const undoGroup = document.createElement('div');
-    undoGroup.style.cssText = 'display:flex;gap:2px;background:rgba(0,0,0,.2);border-radius:4px;padding:2px;margin-left:6px';
-    undoGroup.innerHTML = `
-      <button class="device-btn" id="vis-undo-btn" disabled title="Nothing to undo">
-        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.22 6.28a.749.749 0 0 0 0 1.06l3.5 3.5a.749.749 0 1 0 1.06-1.06L3.31 7.34h6.19A4.5 4.5 0 0 1 14 11.84v.66a.75.75 0 0 0 1.5 0v-.66a6 6 0 0 0-6-6H3.31l2.47-2.47a.749.749 0 1 0-1.06-1.06l-3.5 3.5Z"/></svg>
-      </button>
-      <button class="device-btn" id="vis-redo-btn" disabled title="Nothing to redo">
-        <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M14.78 6.28a.749.749 0 0 1 0 1.06l-3.5 3.5a.749.749 0 1 1-1.06-1.06l2.47-2.47H6.5A4.5 4.5 0 0 0 2 11.84v.66a.75.75 0 0 1-1.5 0v-.66a6 6 0 0 1 6-6h6.19l-2.47-2.47a.749.749 0 1 1 1.06-1.06l3.5 3.5Z"/></svg>
-      </button>`;
-    pageLabel.insertAdjacentElement('afterend', undoGroup);
-  }
-
-  // Wire button clicks
+  // Undo/redo buttons are in the HTML (vis-mode-tools in mode-action-bar) — just wire clicks
   document.getElementById('vis-undo-btn')?.addEventListener('click', () => {
     import('./canvas').then(({ performUndo }) => performUndo());
   });

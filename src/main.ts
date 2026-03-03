@@ -194,8 +194,9 @@ function hideWelcomeOverlay(): void {
 function showConnectedUI(): void {
   updateRepoLabel();
   renderTree();
-  (document.getElementById('branch-badge') as HTMLElement).style.display = 'flex';
-  (document.getElementById('act-logout')   as HTMLElement).style.display = 'flex';
+  (document.getElementById('branch-badge')   as HTMLElement).style.display = 'flex';
+  (document.getElementById('act-logout')     as HTMLElement).style.display = 'flex';
+  (document.getElementById('vis-logout-btn') as HTMLElement | null)?.style.setProperty('display', 'flex');
   setStatusSync(`Connected to ${state.owner}/${state.repo}`);
   loadBranches();
   // Give the service worker the repo credentials so it can fetch assets on demand
@@ -250,9 +251,15 @@ function logout(): void {
   saveConfig();
 
   // Reset UI chrome
-  (document.getElementById('repo-label')   as HTMLElement).textContent = 'Connect Repository';
-  (document.getElementById('branch-badge') as HTMLElement).style.display = 'none';
-  (document.getElementById('act-logout')   as HTMLElement).style.display = 'none';
+  (document.getElementById('repo-label')     as HTMLElement).textContent = 'Connect Repository';
+  (document.getElementById('branch-badge')   as HTMLElement).style.display = 'none';
+  (document.getElementById('act-logout')     as HTMLElement).style.display = 'none';
+  (document.getElementById('vis-logout-btn') as HTMLElement | null)?.style.setProperty('display', 'none');
+  // Restore activity bar (was hidden in visual mode) and reset toolbar groups
+  (document.getElementById('activity-bar')        as HTMLElement).style.display = '';
+  (document.getElementById('vis-mode-tools')      as HTMLElement).style.display = 'none';
+  (document.getElementById('code-mode-tools')     as HTMLElement).style.display = 'none';
+  (document.getElementById('vis-sidebar-footer')  as HTMLElement).style.display = 'none';
   document.getElementById('vis-area')?.classList.add('hidden');
   document.getElementById('code-area')?.classList.remove('hidden');
 
@@ -434,7 +441,7 @@ function bindEventListeners(): void {
   document.getElementById('repo-select')?.addEventListener('click', () => openSettings());
   document.getElementById('overlay-connect-btn')?.addEventListener('click', () => openSettings('connect'));
   document.getElementById('overlay-create-btn')?.addEventListener('click', () => openSettings('create'));
-  document.getElementById('welcome-connect-btn')?.addEventListener('click', () => openSettings());
+  // welcome-connect-btn removed — welcome screen no longer has a connect button
 
   // Mode toggle — async because enterVisualMode may fetch from GitHub
   document.getElementById('mode-vis-btn')?.addEventListener('click', async () => {
@@ -475,13 +482,17 @@ function bindEventListeners(): void {
   document.getElementById('btn-refresh-tree')?.addEventListener('click', refreshTree);
   document.getElementById('btn-collapse-tree')?.addEventListener('click', collapseAll);
 
-  // Activity bar
-  document.getElementById('act-pages')?.addEventListener('click',    () => togglePanel('pages'));
+  // Activity bar (code mode only)
   document.getElementById('act-explorer')?.addEventListener('click', () => togglePanel('explorer'));
   document.getElementById('act-search')?.addEventListener('click',   () => togglePanel('search'));
   document.getElementById('act-settings')?.addEventListener('click', () => openSettings());
   document.getElementById('act-logout')?.addEventListener('click', openLogoutModal);
   document.getElementById('confirm-logout-btn')?.addEventListener('click', logout);
+  // Visual sidebar footer buttons (visual mode only — mirror the activity bar functions)
+  document.getElementById('vis-settings-btn')?.addEventListener('click', () => openSettings());
+  document.getElementById('vis-logout-btn')?.addEventListener('click', openLogoutModal);
+  document.getElementById('vis-pages-tab')?.addEventListener('click', () => switchSidebarPanel('pages'));
+  document.getElementById('vis-files-tab')?.addEventListener('click', () => switchSidebarPanel('explorer'));
 
   // Search — debounced
   const debouncedSearch = debounce((q: unknown) => searchFiles(q as string), 200);
@@ -513,7 +524,11 @@ function bindEventListeners(): void {
     import('./visual/asset-wizard').then(({ openAssetWizard }) => openAssetWizard());
   });
   document.getElementById('btn-close-picker')?.addEventListener('click', closeSectionPicker);
-  document.getElementById('btn-revert-to-blocks')?.addEventListener('click', revertToBlocks);
+  document.getElementById('btn-revert-to-blocks')?.addEventListener('click', () => {
+    if (confirm('Discard all manual HTML edits to this page and restore the visual block editor?\n\nThis cannot be undone.')) {
+      revertToBlocks();
+    }
+  });
 
   // File import
   document.getElementById('btn-import-files')?.addEventListener('click', () => {

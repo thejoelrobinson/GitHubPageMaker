@@ -126,8 +126,9 @@ export function switchPage(id: string): void {
   renderCanvas();
   renderSectionList();
   renderProperties();
-  const label = document.getElementById('vis-page-label');
-  if (label) label.textContent = page.title;
+  // Update section list header to show which page sections belong to
+  const sectionPageLabel = document.getElementById('vis-section-page-label');
+  if (sectionPageLabel) sectionPageLabel.textContent = page.title;
 }
 
 export function renamePage(id: string): void {
@@ -147,8 +148,8 @@ export function renamePage(id: string): void {
   visual.dirty = true;
   renderPageList();
   renderSectionList();
-  const label = document.getElementById('vis-page-label');
-  if (label && visual.activePage?.id === id) label.textContent = page.title;
+  const sectionPageLabel = document.getElementById('vis-section-page-label');
+  if (sectionPageLabel && visual.activePage?.id === id) sectionPageLabel.textContent = page.title;
 }
 
 // ── Render page list ──────────────────────────────────────────────────

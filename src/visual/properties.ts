@@ -5,6 +5,24 @@ import type { SelectedElement, BreadcrumbItem } from './canvas';
 import { escapeHtml, debounce } from '../utils';
 import type { NavLink, Theme } from '../types';
 
+// ── Collapse state (persists for the session) ─────────────────────────
+
+const _collapsedSections = new Set<string>();
+
+const CHEVRON_SVG = `<svg class="pp-chevron" viewBox="0 0 16 16" fill="currentColor" width="11" height="11" aria-hidden="true"><path d="M4.427 6.177a.75.75 0 0 0-1.057 1.069l4.25 4.25a.75.75 0 0 0 1.06 0l4.25-4.25a.75.75 0 0 0-1.06-1.069L8 9.887 4.427 6.177Z"/></svg>`;
+
+function initCollapseSections(panel: HTMLElement): void {
+  panel.querySelectorAll<HTMLElement>('.pp-section').forEach(section => {
+    const key = section.id;
+    if (_collapsedSections.has(key)) section.classList.add('pp-collapsed');
+    section.querySelector<HTMLElement>('.pp-collapsible')?.addEventListener('click', () => {
+      section.classList.toggle('pp-collapsed');
+      if (section.classList.contains('pp-collapsed')) _collapsedSections.add(key);
+      else _collapsedSections.delete(key);
+    });
+  });
+}
+
 // ── Theme-link icons ──────────────────────────────────────────────────
 
 const LINK_ICON = `<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11" aria-hidden="true"><path d="m7.775 3.275 1.25-1.25a3.5 3.5 0 1 1 4.95 4.95l-2.5 2.5a3.5 3.5 0 0 1-4.95 0 .75.75 0 0 1 1.06-1.06 2 2 0 0 0 2.83 0l2.5-2.5a2 2 0 0 0-2.83-2.83l-1.25 1.25a.75.75 0 0 1-1.06-1.06Zm-4.69 9.64a2 2 0 0 0 2.83 0l1.25-1.25a.75.75 0 0 1 1.06 1.06l-1.25 1.25a3.5 3.5 0 0 1-4.95-4.95l2.5-2.5a3.5 3.5 0 0 1 4.95 0 .75.75 0 0 1-1.06 1.06 2 2 0 0 0-2.83 0l-2.5 2.5a2 2 0 0 0 0 2.83Z"/></svg>`;
@@ -124,25 +142,6 @@ export function renderProperties(): void {
   const panel = document.getElementById('vis-props') as HTMLElement;
   if (!panel) return;
 
-  if (visual.selectedBlockId && visual.activePage) {
-    const block = visual.activePage.blocks.find(b => b.id === visual.selectedBlockId);
-    if (block) {
-      const def = BLOCK_DEFS[block.type];
-      panel.innerHTML = `
-        <div class="pp-block-header">
-          <span class="pp-block-type">${def?.name ?? block.type}</span>
-        </div>
-        ${def?.settingsPanel(block) ?? ''}
-        ${block.type === 'nav' ? renderNavLinksEditor(block.id, block.content.links as NavLink[]) : ''}
-        ${animationSection(block)}
-      `;
-      injectLinkIcons(panel, block);
-      bindPanelEvents(panel);
-      return;
-    }
-  }
-
-  // No block selected — show theme panel only when connected
   if (!state.connected) {
     panel.innerHTML = `
       <div class="pp-block-header"><span class="pp-block-type">Properties</span></div>
@@ -161,8 +160,42 @@ export function renderProperties(): void {
     return;
   }
 
-  panel.innerHTML = renderThemePanel();
+  // Theme panel always visible at top
+  let html = renderThemePanel();
+
+  // Block-specific panel below when a block is selected
+  const block = visual.selectedBlockId && visual.activePage
+    ? visual.activePage.blocks.find(b => b.id === visual.selectedBlockId)
+    : null;
+  if (block) {
+    const def = BLOCK_DEFS[block.type];
+    html += `
+      <div class="pp-section-divider"></div>
+      <div class="pp-section" id="vis-block-panel">
+        <div class="pp-block-header pp-collapsible">
+          <span class="pp-block-type">${def?.name ?? block.type}</span>
+          ${CHEVRON_SVG}
+        </div>
+        <div class="pp-section-body">
+          ${def?.settingsPanel(block) ?? ''}
+          ${block.type === 'nav' ? renderNavLinksEditor(block.id, block.content.links as NavLink[]) : ''}
+          ${animationSection(block)}
+        </div>
+      </div>
+    `;
+  }
+
+  panel.innerHTML = html;
   bindThemePanelEvents(panel);
+  initCollapseSections(panel);
+
+  // Scope block-panel events to its own container so .pp-link-btn and [data-key]
+  // selectors don't accidentally match theme panel elements.
+  const blockPanelEl = panel.querySelector<HTMLElement>('#vis-block-panel');
+  if (blockPanelEl && block) {
+    injectLinkIcons(blockPanelEl, block);
+    bindPanelEvents(blockPanelEl);
+  }
 }
 
 // ── Nav links editor ──────────────────────────────────────────────────
@@ -208,36 +241,43 @@ function themeLinkBtn(field: string): string {
 function renderThemePanel(): string {
   const t = visual.theme;
   return `
-    <div class="pp-block-header"><span class="pp-block-type">Site Design</span></div>
-    <div class="pp-group">
-      <label class="pp-label">Site Name</label>
-      <input type="text" value="${escapeHtml(visual.siteName)}" class="pp-input" id="pp-site-name">
-    </div>
-    <div class="pp-group">
-      <label class="pp-label">Colors</label>
-      <div class="pp-row"><input type="color" value="${t.primary}" class="pp-color" id="tc-primary"><span class="pp-color-label">Primary</span>${themeLinkBtn('primary')}</div>
-      <div class="pp-row"><input type="color" value="${t.accent}" class="pp-color" id="tc-accent"><span class="pp-color-label">Accent / Buttons</span>${themeLinkBtn('accent')}</div>
-      <div class="pp-row"><input type="color" value="${t.text}" class="pp-color" id="tc-text"><span class="pp-color-label">Body Text</span>${themeLinkBtn('text')}</div>
-      <div class="pp-row"><input type="color" value="${t.bg}" class="pp-color" id="tc-bg"><span class="pp-color-label">Page Background</span>${themeLinkBtn('bg')}</div>
-      <div class="pp-row"><input type="color" value="${t.bgAlt}" class="pp-color" id="tc-bgAlt"><span class="pp-color-label">Alt Background</span>${themeLinkBtn('bgAlt')}</div>
-    </div>
-    <div class="pp-group">
-      <label class="pp-label">Typography</label>
-      <div class="pp-row" style="align-items:center;margin-bottom:4px">
-        <span style="font-size:11px;color:var(--text-secondary);flex:1">Heading Font</span>${themeLinkBtn('headingFont')}
+    <div class="pp-section" id="pp-sect-theme">
+      <div class="pp-block-header pp-collapsible">
+        <span class="pp-block-type">Site Design</span>
+        ${CHEVRON_SVG}
       </div>
-      <select class="pp-select" id="tf-heading">${fontOptions(t.headingFont)}</select>
-      <div class="pp-row" style="align-items:center;margin-top:8px;margin-bottom:4px">
-        <span style="font-size:11px;color:var(--text-secondary);flex:1">Body Font</span>${themeLinkBtn('bodyFont')}
+      <div class="pp-section-body">
+        <div class="pp-group">
+          <label class="pp-label">Site Name</label>
+          <input type="text" value="${escapeHtml(visual.siteName)}" class="pp-input" id="pp-site-name">
+        </div>
+        <div class="pp-group">
+          <label class="pp-label">Colors</label>
+          <div class="pp-row"><input type="color" value="${t.primary}" class="pp-color" id="tc-primary"><span class="pp-color-label">Primary</span>${themeLinkBtn('primary')}</div>
+          <div class="pp-row"><input type="color" value="${t.accent}" class="pp-color" id="tc-accent"><span class="pp-color-label">Accent / Buttons</span>${themeLinkBtn('accent')}</div>
+          <div class="pp-row"><input type="color" value="${t.text}" class="pp-color" id="tc-text"><span class="pp-color-label">Body Text</span>${themeLinkBtn('text')}</div>
+          <div class="pp-row"><input type="color" value="${t.bg}" class="pp-color" id="tc-bg"><span class="pp-color-label">Page Background</span>${themeLinkBtn('bg')}</div>
+          <div class="pp-row"><input type="color" value="${t.bgAlt}" class="pp-color" id="tc-bgAlt"><span class="pp-color-label">Alt Background</span>${themeLinkBtn('bgAlt')}</div>
+        </div>
+        <div class="pp-group">
+          <label class="pp-label">Typography</label>
+          <div class="pp-row" style="align-items:center;margin-bottom:4px">
+            <span style="font-size:11px;color:var(--text-secondary);flex:1">Heading Font</span>${themeLinkBtn('headingFont')}
+          </div>
+          <select class="pp-select" id="tf-heading">${fontOptions(t.headingFont)}</select>
+          <div class="pp-row" style="align-items:center;margin-top:8px;margin-bottom:4px">
+            <span style="font-size:11px;color:var(--text-secondary);flex:1">Body Font</span>${themeLinkBtn('bodyFont')}
+          </div>
+          <select class="pp-select" id="tf-body">${fontOptions(t.bodyFont)}</select>
+        </div>
+        <div class="pp-group">
+          <div class="pp-row" style="align-items:center;margin-bottom:4px">
+            <label class="pp-label" style="margin:0;flex:1">Border Radius</label>${themeLinkBtn('radius')}
+          </div>
+          <input type="range" min="0" max="20" step="1" value="${t.radius}" class="pp-range" id="t-radius">
+          <span id="t-radius-val" style="font-size:11px;color:var(--text-secondary)">${t.radius}px</span>
+        </div>
       </div>
-      <select class="pp-select" id="tf-body">${fontOptions(t.bodyFont)}</select>
-    </div>
-    <div class="pp-group">
-      <div class="pp-row" style="align-items:center;margin-bottom:4px">
-        <label class="pp-label" style="margin:0;flex:1">Border Radius</label>${themeLinkBtn('radius')}
-      </div>
-      <input type="range" min="0" max="20" step="1" value="${t.radius}" class="pp-range" id="t-radius">
-      <span id="t-radius-val" style="font-size:11px;color:var(--text-secondary)">${t.radius}px</span>
     </div>
   `;
 }
@@ -882,6 +922,24 @@ const FONT_PAIRS = [
   { name: 'Sharp',     heading: 'Plus Jakarta Sans', body: 'Plus Jakarta Sans',  desc: 'Modern Swiss style' },
 ];
 
+let _fontPairFontsInjected = false;
+function ensureFontPairFontsLoaded(): void {
+  if (_fontPairFontsInjected) return;
+  _fontPairFontsInjected = true;
+  // Collect all unique Google Font families from FONT_PAIRS (skip system fonts like Georgia)
+  const systemFonts = new Set(['Georgia', 'serif', 'sans-serif', 'monospace']);
+  const families = [...new Set(
+    FONT_PAIRS.flatMap(p => [p.heading, p.body])
+      .flatMap(f => f.split(',').map(s => s.trim()))
+      .filter(f => f && !systemFonts.has(f))
+  )];
+  const query = families.map(f => `family=${encodeURIComponent(f)}:wght@400;600;700`).join('&');
+  const link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = `https://fonts.googleapis.com/css2?${query}&display=swap`;
+  document.head.appendChild(link);
+}
+
 function renderLookCard(look: Look): string {
   const bgColor     = look.vars['--color-bg']      ?? '#fff';
   const primaryColor = look.vars['--color-primary'] ?? '#000';
@@ -1044,6 +1102,16 @@ function applyLook(lookId: string): void {
 }
 
 function applyFontPair(heading: string, body: string): void {
+  // ── Block-based page: update visual.theme (same path as applyLook) ───
+  if (visual.activePage && visual.activePage.blocks.length > 0) {
+    const unl = _unlinkedThemeFields;
+    if (!unl.has('headingFont')) visual.theme.headingFont = heading;
+    if (!unl.has('bodyFont'))    visual.theme.bodyFont    = body;
+    propagateThemeColors(visual.theme);
+    onThemeChange();
+    return;
+  }
+
   const headingVal = `'${heading}', sans-serif`;
   const bodyVal = `'${body}', sans-serif`;
   const headIdx = dmCssVars.light.findIndex(v => v.name === '--font-heading');
@@ -2194,6 +2262,7 @@ function bindCssPanelEvents(cp: HTMLElement, navigateFn: () => void): void {
 
   // Looks panel events
   if (dmCssPanelView === 'looks') {
+    ensureFontPairFontsLoaded();
     cp.querySelectorAll<HTMLElement>('.look-card').forEach(card => {
       card.addEventListener('click', () => {
         applyLook(card.dataset.lookId!);

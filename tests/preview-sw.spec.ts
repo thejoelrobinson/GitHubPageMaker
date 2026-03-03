@@ -206,7 +206,7 @@ test.describe('MIME-type regression — raw.githubusercontent.com fix', () => {
 
     const { contentType, body } = await swFetch(page, '/preview/uncached.html');
     expect(contentType).toContain('text/html');
-    expect(body).toContain('Waiting');
+    expect(body).toContain('Loading repository assets');
     expect(body).not.toContain('"message"'); // not a raw GitHub API error JSON
   });
 });
@@ -450,6 +450,6 @@ test.describe('SW cache management', () => {
       const iframe = document.getElementById('vis-iframe') as HTMLIFrameElement;
       return (await iframe.contentWindow!.fetch('/preview/a.css')).text();
     });
-    expect(body).toContain('Waiting');
+    expect(body).toContain('Loading repository assets');
   });
 });

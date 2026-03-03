@@ -15,31 +15,63 @@ import { state } from '../state';
 // triggering the CSS transition.  The editor canvas never sees these
 // wrappers — they are only emitted by generatePageHTML().
 
-const SECTION_ANIM_CSS = `html{overflow-x:hidden}
+const SECTION_ANIM_CSS = `
+/* overflow-x:clip clips horizontal overflow without creating a block formatting
+   context, so position:sticky nav elements keep working correctly in all browsers. */
+body{overflow-x:clip}
 [data-wb-anim]{display:block}
-[data-wb-anim]:not(.wb-anim-ready){opacity:0}
-[data-wb-anim="fade-up"]:not(.wb-anim-ready){transform:translateY(44px)}
-[data-wb-anim="fade-down"]:not(.wb-anim-ready){transform:translateY(-44px)}
-[data-wb-anim="fade-in-left"]:not(.wb-anim-ready){transform:translateX(-44px)}
-[data-wb-anim="fade-in-right"]:not(.wb-anim-ready){transform:translateX(44px)}
-[data-wb-anim="zoom-in"]:not(.wb-anim-ready){transform:scale(.88)}
-[data-wb-anim="zoom-out"]:not(.wb-anim-ready){transform:scale(1.12)}
-[data-wb-anim="flip-up"]:not(.wb-anim-ready){transform:perspective(800px) rotateX(20deg);transform-origin:top center}
-[data-wb-anim="slide-up"]:not(.wb-anim-ready){transform:translateY(80px)}
-[data-wb-anim="blur-in"]:not(.wb-anim-ready){filter:blur(14px)}
+/* Initial hidden state — only applied once .wb-anim-init is on <html>
+   (set by JS below). This prevents a blank flash on first paint. */
+html.wb-anim-init [data-wb-anim]:not(.wb-anim-ready){opacity:0}
+html.wb-anim-init [data-wb-anim="fade-up"]:not(.wb-anim-ready){transform:translateY(44px)}
+html.wb-anim-init [data-wb-anim="fade-down"]:not(.wb-anim-ready){transform:translateY(-44px)}
+html.wb-anim-init [data-wb-anim="fade-in-left"]:not(.wb-anim-ready){transform:translateX(-44px)}
+html.wb-anim-init [data-wb-anim="fade-in-right"]:not(.wb-anim-ready){transform:translateX(44px)}
+html.wb-anim-init [data-wb-anim="zoom-in"]:not(.wb-anim-ready){transform:scale(.88)}
+html.wb-anim-init [data-wb-anim="zoom-out"]:not(.wb-anim-ready){transform:scale(1.12)}
+html.wb-anim-init [data-wb-anim="flip-up"]:not(.wb-anim-ready){transform:perspective(800px) rotateX(20deg);transform-origin:top center}
+html.wb-anim-init [data-wb-anim="slide-up"]:not(.wb-anim-ready){transform:translateY(80px)}
+html.wb-anim-init [data-wb-anim="blur-in"]:not(.wb-anim-ready){filter:blur(14px)}
 [data-wb-anim].wb-anim-ready{opacity:1;transform:none;filter:none;transition:opacity var(--wb-dur,600ms) var(--wb-ease,ease),transform var(--wb-dur,600ms) var(--wb-ease,ease),filter var(--wb-dur,600ms) var(--wb-ease,ease);transition-delay:var(--wb-delay,0ms)}
 @media(prefers-reduced-motion:reduce){[data-wb-anim]{opacity:1!important;transform:none!important;filter:none!important;transition:none!important}}`;
 
 const SECTION_ANIM_SCRIPT = `<script>(function(){
-  if(!('IntersectionObserver' in window))return;
-  if(window.matchMedia('(prefers-reduced-motion:reduce)').matches){
-    document.querySelectorAll('[data-wb-anim]').forEach(function(el){el.classList.add('wb-anim-ready')});
+  var els=document.querySelectorAll('[data-wb-anim]');
+  if(!els.length)return;
+
+  /* Fallback: no IntersectionObserver support → show everything immediately */
+  if(!('IntersectionObserver' in window)){
+    els.forEach(function(el){el.classList.add('wb-anim-ready')});
     return;
   }
+  /* Reduced-motion: skip all animation, show immediately */
+  if(window.matchMedia('(prefers-reduced-motion:reduce)').matches){
+    els.forEach(function(el){el.classList.add('wb-anim-ready')});
+    return;
+  }
+
+  /* Mark the document so CSS initial-hidden states activate.
+     Elements already in the viewport get wb-anim-ready right now so they
+     never flash invisible — only below-fold elements will animate on scroll. */
+  document.documentElement.classList.add('wb-anim-init');
+  var vh=window.innerHeight;
   var obs=new IntersectionObserver(function(entries){
-    entries.forEach(function(e){if(e.isIntersecting){e.target.classList.add('wb-anim-ready');obs.unobserve(e.target)}});
+    entries.forEach(function(e){
+      if(e.isIntersecting){e.target.classList.add('wb-anim-ready');obs.unobserve(e.target);}
+    });
   },{threshold:0.08,rootMargin:'0px 0px -30px 0px'});
-  document.querySelectorAll('[data-wb-anim]').forEach(function(el){obs.observe(el)});
+
+  els.forEach(function(el){
+    /* Already fully above the fold → show immediately, no animation needed */
+    var r=el.getBoundingClientRect();
+    if(r.top<vh){el.classList.add('wb-anim-ready');}
+    else{obs.observe(el);}
+  });
+
+  /* Safety net: if something prevents the IO from firing, show after 4s */
+  setTimeout(function(){
+    els.forEach(function(el){el.classList.add('wb-anim-ready')});
+  },4000);
 })();</script>`;
 
 /** Wrap a block's rendered HTML with an entrance-animation container when animIn is set. */
@@ -132,9 +164,9 @@ export const EDITING_CSS = `
 .wbc:disabled{opacity:.3;cursor:not-allowed}
 .wb-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;background:rgba(99,102,241,.08);padding:0;height:0;overflow:hidden;cursor:pointer;color:#6366f1;font-size:12px;font-weight:600;font-family:system-ui,-apple-system,sans-serif;transition:height .15s,opacity .15s;opacity:0}
 [data-block-id]:hover .wb-add{height:32px;opacity:1}
-[data-field]{cursor:text}
-[data-field]:hover{background:rgba(99,102,241,.06);border-radius:2px}
-[data-field][contenteditable=true]{outline:2px solid #6366f1!important;outline-offset:2px;border-radius:2px;cursor:text}
+[data-field]{cursor:text;outline:1px dashed rgba(99,102,241,.3);outline-offset:2px;border-radius:2px}
+[data-field]:hover{background:rgba(99,102,241,.08);outline-color:rgba(99,102,241,.6)}
+[data-field]:focus,[data-field]:focus-within{outline:2px solid #6366f1!important;outline-offset:2px;border-radius:2px;background:rgba(99,102,241,.04);cursor:text}
 .wb-toolbar{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:9999;background:#1e293b;border:1px solid #334155;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none;align-items:center;gap:2px;padding:4px 6px}
 .wb-toolbar.show{display:flex}
 .wbt{width:28px;height:26px;border-radius:4px;border:none;background:none;color:#94a3b8;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;transition:all .15s;font-family:system-ui}
@@ -144,7 +176,23 @@ export const EDITING_CSS = `
 [data-wb-highlighted]{outline:3px solid rgba(99,102,241,.7)!important;outline-offset:2px}
 [data-wb-hovering]{outline:2px dashed rgba(99,102,241,.45)!important;outline-offset:3px}
 body.wb-inspect *{cursor:crosshair!important}
+body.wb-inspect [data-field]{cursor:text!important}
 body.wb-inspect [data-wb-hovering]{outline:2px solid rgba(37,99,235,.85)!important;outline-offset:2px;background:rgba(37,99,235,.06)!important}
+body.wb-interact [data-block-id]{outline:none!important;cursor:auto!important;transition:none!important}
+body.wb-interact [data-block-id]:hover{outline:none!important}
+body.wb-interact [data-block-id].wb-sel{outline:none!important}
+body.wb-interact [data-wb-hovering]{outline:none!important;background:inherit!important}
+body.wb-interact [data-wb-highlighted]{outline:none!important}
+body.wb-interact .wb-controls{display:none!important;pointer-events:none!important}
+body.wb-interact .wb-add{display:none!important}
+body.wb-interact .wb-toolbar{display:none!important}
+body.wb-interact #wb-elem-toolbar{display:none!important}
+body.wb-interact #wb-ctx-menu{display:none!important}
+body.wb-interact [data-field]{cursor:inherit!important;pointer-events:none!important;background:none!important;outline:none!important}
+body.wb-interact [data-field]:hover{background:none!important}
+body.wb-interact [data-field][contenteditable]{outline:none!important;background:none!important}
+body.wb-interact *{cursor:auto!important}
+body.wb-interact a,body.wb-interact button,body.wb-interact input,body.wb-interact select,body.wb-interact textarea,[data-wb-interact] a,[data-wb-interact] button{cursor:pointer!important;pointer-events:auto!important}
 [data-wb-placeholder]:empty::before {
   content: attr(data-wb-placeholder);
   color: rgba(148,163,184,.5);
@@ -316,6 +364,7 @@ if(!hasBlocks){
 
   // ── Tool mode (declare before first use in click/hover handlers) ─────
   var inspectMode=false;
+  var interactMode=false;
   var hoverSectionIdx=-2;
 
   // ── DOM structure helpers (Design Mode Inspector) ─────────────────
@@ -448,8 +497,8 @@ if(!hasBlocks){
 
   // ── Click: select element and send computed styles + breadcrumb ───────
   document.addEventListener('click',function(e){
+    if(interactMode) return; // Interact mode: clicks are fully natural
     if(inspectMode){
-      e.preventDefault(); // block link navigation / text cursor
       // Move highlight from hover state to click-selected state
       document.querySelectorAll('[data-wb-hovering]').forEach(function(hv){hv.removeAttribute('data-wb-hovering');});
       document.querySelectorAll('[data-wb-highlighted]').forEach(function(hl){hl.removeAttribute('data-wb-highlighted');});
@@ -658,6 +707,7 @@ if(!hasBlocks){
 
   // ── Hover: notify parent + element-level highlight in inspect mode ───
   document.addEventListener('mouseover',function(e){
+    if(interactMode) return; // Interact mode: no editor hover feedback
     var target=e.target;
     if(!target||!target.tagName)return;
     if(target.id&&target.id.startsWith('wb-'))return;
@@ -760,12 +810,32 @@ if(!hasBlocks){
     }
     if(d.type==='wb:setInspectMode'){
       inspectMode=!!d.active;
-      document.designMode=inspectMode?'off':'on';
-      document.body.classList.toggle('wb-inspect',inspectMode);
+      if(!interactMode){
+        // designMode stays 'on' — text is always editable unless in Preview (interact) mode
+        document.body.classList.toggle('wb-inspect',inspectMode);
+      }
       if(!inspectMode){
         document.querySelectorAll('[data-wb-hovering]').forEach(function(hv){hv.removeAttribute('data-wb-hovering');});
         removeElemToolbar();
         removeCtxMenu();
+      }
+    }
+    if(d.type==='wb:setInteractMode'){
+      interactMode=!!d.active;
+      document.body.classList.toggle('wb-interact',interactMode);
+      if(interactMode){
+        // Exit any editing state cleanly
+        document.designMode='off';
+        document.body.classList.remove('wb-inspect');
+        document.querySelectorAll('[data-wb-hovering]').forEach(function(el){el.removeAttribute('data-wb-hovering');});
+        document.querySelectorAll('[data-wb-highlighted]').forEach(function(el){el.removeAttribute('data-wb-highlighted');});
+        document.querySelectorAll('.wb-sel').forEach(function(el){el.classList.remove('wb-sel');});
+        removeElemToolbar();
+        removeCtxMenu();
+      } else {
+        // Leaving Preview — restore text editing and inspect overlays
+        document.designMode='on';
+        document.body.classList.toggle('wb-inspect',inspectMode);
       }
     }
     if(d.type==='wb:duplicateSection'){
@@ -790,42 +860,80 @@ if(!hasBlocks){
 } else {
   // ══════════════════════════════════════════════
   // BLOCK MODE — page built with the visual editor
-  // Only [data-field] elements are editable.
+  // All [data-field] elements are always editable.
   // ══════════════════════════════════════════════
-  var curField=null,curBid=null;
-
-  // Track custom block currently in inline-edit mode
   var customEditEl = null, customEditBid = null;
 
+  // Make every [data-field] immediately contenteditable so clicking
+  // places the caret naturally — no click-to-activate needed.
+  function activateFields(){
+    document.querySelectorAll('[data-field]').forEach(function(f){
+      if(f.contentEditable==='true')return;
+      // Convert rendered markdown HTML back to source so innerText saves correctly
+      var h=f.innerHTML;
+      h=h.replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**');
+      h=h.replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*');
+      f.innerHTML=h;
+      f.contentEditable='true';
+      // Ensure the element is keyboard-focusable in all browsers (Safari requires
+      // tabIndex on non-interactive elements even when contentEditable is set).
+      if(!f.hasAttribute('tabindex'))f.setAttribute('tabindex','0');
+    });
+  }
+  function deactivateFields(){
+    document.querySelectorAll('[data-field]').forEach(function(f){f.contentEditable='false';});
+  }
+  activateFields();
+
+  // Save a field whenever it loses focus
+  document.addEventListener('blur',function(e){
+    var f=e.target;
+    if(!f||!f.dataset||!f.dataset.field)return;
+    var bid=f.dataset.blockId;
+    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:f.innerText.trim()},'*');
+  },true);
+
   document.addEventListener('click',function(e){
+    if(interactMode) return;
     if(e.target.closest('.wb-controls')||e.target.closest('.wb-add'))return;
 
-    // ── Custom-block inline editing ─────────────────────────────────
-    // Clicking a text node inside a custom (raw-HTML) block's .wb-inner
-    // makes just that block's content editable, preserving block controls.
-    if(!e.target.closest('[data-field][contenteditable=true]')){
-      var inner=e.target.closest('.wb-inner');
-      if(inner){
-        var customBlk=inner.closest('[data-block-type="custom"]');
-        if(customBlk){
-          endCustomEdit();
-          customEditEl=inner; customEditBid=customBlk.dataset.blockId;
-          inner.contentEditable='true'; inner.focus();
-          if(toolbar)toolbar.classList.add('show');
-          doSel(customBlk.dataset.blockId);
-          e.stopPropagation();
-          return;
-        }
+    // Custom-block inline editing (raw HTML blocks)
+    var inner=e.target.closest('.wb-inner');
+    if(inner&&!e.target.closest('[data-field]')){
+      var customBlk=inner.closest('[data-block-type="custom"]');
+      if(customBlk){
+        endCustomEdit();
+        customEditEl=inner;customEditBid=customBlk.dataset.blockId;
+        inner.contentEditable='true';inner.focus();
+        if(toolbar)toolbar.classList.add('show');
+        doSel(customBlk.dataset.blockId);
+        e.stopPropagation();
+        return;
       }
     }
 
-    // ── Standard block-field editing ────────────────────────────────
-    if(e.target.closest('[data-field][contenteditable=true]'))return;
+    // Place caret at click position — don't preventDefault so the browser also
+    // handles cursor placement naturally (prevents Safari/Chrome cursor loss).
     var field=e.target.closest('[data-field]');
-    if(field){var blk=field.closest('[data-block-id]');if(blk){doSel(blk.dataset.blockId);doEdit(field,blk.dataset.blockId);e.stopPropagation();return;}}
+    if(field){
+      field.focus();
+      var sel=window.getSelection();
+      if(sel){
+        var range=null;
+        if(document.caretRangeFromPoint){
+          range=document.caretRangeFromPoint(e.clientX,e.clientY);
+        }else if(document.caretPositionFromPoint){
+          var cpos=document.caretPositionFromPoint(e.clientX,e.clientY);
+          if(cpos){range=document.createRange();range.setStart(cpos.offsetNode,cpos.offset);range.collapse(true);}
+        }
+        if(range){sel.removeAllRanges();sel.addRange(range);}
+      }
+    }
+
+    // Select the block for the properties panel
     var blk=e.target.closest('[data-block-id]');
-    if(blk){doEnd();endCustomEdit();doSel(blk.dataset.blockId);e.stopPropagation();return;}
-    doEnd();endCustomEdit();doDeSel();
+    if(blk){doSel(blk.dataset.blockId);e.stopPropagation();return;}
+    endCustomEdit();doDeSel();
   });
 
   function endCustomEdit(){
@@ -847,52 +955,23 @@ if(!hasBlocks){
     document.querySelectorAll('[data-block-id].wb-sel').forEach(function(el){el.classList.remove('wb-sel');});
     P.postMessage({type:'wb:deselect'},'*');
   }
-  function doEdit(field,bid){
-    if(curField&&curField!==field)doEnd();
-    curField=field;curBid=bid;
-    // Convert rendered markdown HTML back to raw syntax so the user edits
-    // **bold** / *italic* markers — innerText then saves them correctly.
-    var h=field.innerHTML;
-    h=h.replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**');
-    h=h.replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*');
-    field.innerHTML=h;
-    field.contentEditable='true';field.focus();
-    var r=document.createRange();r.selectNodeContents(field);
-    var s=window.getSelection();if(s){s.removeAllRanges();s.addRange(r);}
-    if(toolbar)toolbar.classList.add('show');
-    P.postMessage({type:'wb:editStart',blockId:bid,field:field.dataset.field},'*');
-  }
-  function doEnd(){
-    if(!curField)return;
-    var f=curField,bid=curBid;
-    curField=null;curBid=null;
-    f.contentEditable='false';
-    if(toolbar)toolbar.classList.remove('show');
-    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:f.innerText.trim()},'*');
 
-  }
-  if(toolbar){
-    toolbar.addEventListener('click',function(e){
-      var cmd=e.target.closest('[data-cmd]');
-      if(cmd){
-        if(cmd.dataset.cmd==='link'){var u=prompt('URL:');if(u)document.execCommand('createLink',false,u);}
-        else document.execCommand(cmd.dataset.cmd);
-        if(curField)curField.focus();return;
-      }
-      if(e.target.classList.contains('wbt-done'))doEnd();
-    });
-  }
   window.addEventListener('message',function(e){
     if(!e.data)return;
     if(e.data.type==='wb:select'){
-      // Highlight the block without echoing wb:select back to the parent.
-      // doSel() echoes, which causes a round-trip that flashes the properties panel.
-      // User-initiated clicks call doSel() directly and correctly echo to the parent.
       document.querySelectorAll('[data-block-id].wb-sel').forEach(function(b){b.classList.remove('wb-sel');});
       var selEl=document.querySelector('[data-block-id="'+e.data.id+'"]');
       if(selEl)selEl.classList.add('wb-sel');
     }
-    if(e.data.type==='wb:deselect')doDeSel();
+    if(e.data.type==='wb:deselect'){
+      document.querySelectorAll('[data-block-id].wb-sel').forEach(function(b){b.classList.remove('wb-sel');});
+    }
+    if(e.data.type==='wb:setInteractMode'){
+      interactMode=!!e.data.active;
+      document.body.classList.toggle('wb-interact',interactMode);
+      if(interactMode){endCustomEdit();deactivateFields();}
+      else{activateFields();}
+    }
     if(e.data.type==='wb:replayAnim'){
       var animEl=document.querySelector('[data-block-id="'+e.data.blockId+'"]');
       if(!animEl||!e.data.animIn||e.data.animIn==='none')return;
@@ -927,7 +1006,15 @@ if(!hasBlocks){
       });
     }
   });
-  document.addEventListener('keydown',function(e){if(e.key==='Escape'){doEnd();endCustomEdit();}});
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'){
+      if(document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.field){
+        document.activeElement.blur();
+      }
+      endCustomEdit();
+      doDeSel();
+    }
+  });
 }
 })();
 </script>`;

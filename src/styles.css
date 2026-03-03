@@ -60,7 +60,7 @@
   --statusbar-h:  22px;
 }
 
-html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg-deepest); color: var(--text-primary); }
+html, body { height: 100%; overflow: hidden; font-family: 'Everyday Sans UI', 'Segoe UI', system-ui, sans-serif; background: var(--bg-deepest); color: var(--text-primary); }
 
 /* ── App shell ─────────────────────────────────────────────────── */
 
@@ -70,10 +70,12 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 
 #titlebar {
   height: var(--titlebar-h); background: #323233;
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
   padding: 0 10px; border-bottom: 1px solid #000;
-  flex-shrink: 0; user-select: none;
+  flex-shrink: 0; user-select: none; gap: 0;
 }
+/* Mode toggle takes remaining center space between logo and repo context */
+#titlebar .mode-toggle { margin: 0 auto; }
 .title-left  { display: flex; align-items: center; gap: 8px; }
 .title-text  { font-size: 12px; color: var(--text-secondary); }
 #titlebar .title-right { display: flex; align-items: center; gap: 6px; }
@@ -87,6 +89,15 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 }
 .mode-btn.active { background: var(--bg-panel); color: var(--text-primary); }
 .mode-btn svg { width: 12px; height: 12px; vertical-align: middle; margin-right: 4px; }
+
+/* Titlebar icon buttons (settings, disconnect) */
+.titlebar-icon-btn {
+  width: 24px; height: 24px; border-radius: 4px; border: none;
+  background: none; color: var(--text-secondary); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, color .15s; flex-shrink: 0;
+}
+.titlebar-icon-btn:hover { background: rgba(255,255,255,.1); color: var(--text-primary); }
 
 /* Repo + branch */
 #repo-select {
@@ -136,8 +147,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   /* Always visible — panel switching handled via switchSidebarPanel() */
 }
 .sidebar-header {
-  padding: 8px 12px 4px; font-size: 11px; font-weight: 700;
-  letter-spacing: 1.2px; color: var(--text-secondary); text-transform: uppercase;
+  padding: 8px 12px 4px; font-size: 12px; font-weight: 700;
+  letter-spacing: 1px; color: var(--text-secondary); text-transform: uppercase;
   display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
 }
 .sidebar-header button {
@@ -299,14 +310,17 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 /* ── Status bar ────────────────────────────────────────────────── */
 
 #status-bar {
-  height: var(--statusbar-h); background: var(--accent);
+  height: var(--statusbar-h); background: #1a1a1c; border-top: 1px solid #000;
   display: flex; align-items: center; padding: 0 8px; gap: 16px;
-  flex-shrink: 0; font-size: 12px; color: #fff; user-select: none;
+  flex-shrink: 0; font-size: 12px; color: var(--text-secondary); user-select: none;
 }
-.status-item { display: flex; align-items: center; gap: 4px; cursor: pointer; }
-.status-item:hover { background: rgba(255,255,255,.15); border-radius: 3px; padding: 2px 4px; margin: -2px -4px; }
+.status-item { display: flex; align-items: center; gap: 4px; cursor: pointer; border-radius: 3px; padding: 2px 4px; transition: background .15s; }
+.status-item:hover { background: var(--bg-hover); color: var(--text-primary); }
 .status-item svg { width: 14px; height: 14px; }
 #status-right { margin-left: auto; display: flex; gap: 16px; }
+/* Hide code-specific status items in visual mode */
+.status-code-only { transition: opacity .2s; }
+.status-code-only.hidden { display: none; }
 
 /* ─────────────────────────────────────────────────────────────────
    VISUAL EDITOR
@@ -318,24 +332,19 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 /* ── Code-edit banner ──────────────────────────────────────────── */
 #vis-code-edit-banner {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px;
-  background: rgba(99,102,241,.12); border-bottom: 1px solid rgba(99,102,241,.25);
-  padding: 6px 16px; font-size: 12px; color: #a5b4fc;
+  background: rgba(206,145,120,.08); border-bottom: 1px solid rgba(206,145,120,.2);
+  padding: 6px 16px; font-size: 12px; color: var(--orange);
 }
 #vis-code-edit-banner span { flex: 1; }
 #btn-revert-to-blocks {
-  background: rgba(99,102,241,.2); border: 1px solid rgba(99,102,241,.4);
-  color: #c7d2fe; border-radius: 4px; padding: 3px 10px;
+  background: rgba(244,67,71,.12); border: 1px solid rgba(244,67,71,.3);
+  color: var(--red); border-radius: 4px; padding: 3px 10px;
   font-size: 11px; cursor: pointer; font-family: inherit;
   transition: background .15s;
 }
-#btn-revert-to-blocks:hover { background: rgba(99,102,241,.35); color: #e0e7ff; }
+#btn-revert-to-blocks:hover { background: rgba(244,67,71,.25); }
 
-/* ── Visual toolbar ────────────────────────────────────────────── */
-#vis-toolbar {
-  height: 38px; background: var(--bg-dark); display: flex; align-items: center;
-  padding: 0 12px; gap: 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
-#vis-page-label { font-size: 13px; color: var(--text-primary); font-weight: 500; margin-right: 4px; }
+/* vis-toolbar removed — content merged into #mode-action-bar via #vis-mode-tools */
 .device-btn {
   width: 28px; height: 24px; border-radius: 4px; border: none;
   background: none; color: var(--text-secondary); cursor: pointer;
@@ -344,18 +353,17 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .device-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .device-btn.active { background: var(--bg-selected); color: #fff; }
 .device-btn svg { width: 14px; height: 14px; }
-#vis-toolbar .spacer { flex: 1; }
 
 /* ── Visual 3-panel layout ─────────────────────────────────────── */
 #vis-layout { flex: 1; display: flex; overflow: hidden; }
 
-/* Pages panel lives in the shared sidebar — no separate vis-left needed */
-#panel-pages {
-  flex: 1; overflow: hidden;
+/* All panels fill the sidebar — flex:1 applied via switchSidebarPanel when active */
+#panel-pages, #panel-explorer, #panel-css, #panel-search {
+  flex: 1; overflow: hidden; min-height: 0;
 }
 .vis-panel-section { padding: 8px 10px 4px; display: flex; flex-direction: column; }
 .vis-panel-title {
-  font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
   color: var(--text-secondary); padding: 4px 4px 4px; display: flex; align-items: center; justify-content: space-between;
 }
 .vis-panel-title button {
@@ -410,9 +418,33 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .sl-drop-above { box-shadow: inset 0 2px 0 var(--accent); }
 .sl-drop-below { box-shadow: inset 0 -2px 0 var(--accent); }
 /* Canvas-hover: mouse in iframe highlights matching panel row */
-.sl-canvas-hover { background: var(--bg-hover) !important; color: var(--text-primary) !important; outline: 1px solid rgba(99,102,241,.3); outline-offset: -1px; }
+.sl-canvas-hover { background: var(--bg-hover) !important; color: var(--text-primary) !important; outline: 1px solid rgba(0,120,212,.3); outline-offset: -1px; }
 /* Delete button */
 .sl-delete-btn:hover { background: rgba(244,67,71,.15) !important; color: var(--red) !important; }
+
+/* Block picker embedded under Sections in the pages panel */
+#vis-block-picker {
+  flex-shrink: 0; border-top: 1px solid var(--border);
+  max-height: 160px; display: flex; flex-direction: column; overflow: hidden;
+}
+#vis-block-picker .elem-body { flex: 1; overflow-y: auto; padding: 4px 8px 6px; }
+
+/* Visual sidebar tab bar — persistent navigation at top of sidebar (outside all panels) */
+.vis-sidebar-footer {
+  display: flex; align-items: center; gap: 1px;
+  padding: 3px 6px; border-bottom: 1px solid var(--border);
+  background: var(--bg-dark); flex-shrink: 0;
+}
+.vis-sf-btn {
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); border-radius: 4px;
+  padding: 5px 7px; font-size: 11px; font-family: inherit;
+  transition: color .15s, background .15s;
+}
+.vis-sf-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.vis-sf-btn.active { color: var(--text-primary); background: var(--bg-active); }
+.vis-sf-btn svg { flex-shrink: 0; }
 
 /* Add section button */
 #vis-add-section-btn {
@@ -447,7 +479,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
    CSS value is never overridden. */
 #vis-iframe {
   width: 100%;
-  height: calc(100vh - 130px);  /* viewport minus titlebar + vis-toolbar + padding */
+  /* titlebar(30) + mode-action-bar(38) + status(22) + padding(24) — vis-toolbar removed */
+  height: calc(100vh - 114px);
   min-height: 600px;
   border: none;
   display: block;
@@ -458,8 +491,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   position: relative; cursor: pointer;
   border: 2px solid transparent; transition: border-color .15s;
 }
-.vc-block:hover { border-color: rgba(99,102,241,.4); }
-.vc-block.selected { border-color: #6366f1; }
+.vc-block:hover { border-color: rgba(0,120,212,.4); }
+.vc-block.selected { border-color: var(--accent); }
 .vc-block-controls {
   position: absolute; top: 6px; right: 6px; z-index: 50;
   display: flex; gap: 4px; opacity: 0; transition: opacity .15s;
@@ -480,16 +513,16 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .vc-add-btn {
   width: 100%; border: none; background: none; padding: 0; margin: 0;
   display: flex; align-items: center; justify-content: center; gap: 6px;
-  height: 0; overflow: hidden; transition: height .15s; cursor: pointer;
-  color: #6366f1; font-size: 12px; font-weight: 600;
-  background: rgba(99,102,241,.08); opacity: 0; transition: opacity .15s, height .15s;
+  height: 6px; overflow: hidden; cursor: pointer;
+  color: var(--accent); font-size: 12px; font-weight: 600;
+  background: rgba(0,120,212,.06); opacity: 0.4; transition: opacity .15s, height .2s;
 }
 .vc-block:hover .vc-add-btn { height: 32px; opacity: 1; }
 
 /* Inline text editing */
 .vc-text { cursor: text; outline: none; }
-.vc-text:hover { background: rgba(99,102,241,.06); border-radius: 2px; }
-.vc-editing { outline: 2px solid #6366f1 !important; outline-offset: 2px; border-radius: 2px; cursor: text; }
+.vc-text:hover { background: rgba(0,120,212,.06); border-radius: 2px; }
+.vc-editing { outline: 2px solid var(--accent) !important; outline-offset: 2px; border-radius: 2px; cursor: text; }
 
 /* Empty canvas */
 .vc-empty {
@@ -508,6 +541,14 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 #vis-props::-webkit-scrollbar-thumb { background: #424242; border-radius: 2px; }
 
 /* Properties panel internals */
+.pp-section-divider {
+  height: 1px; background: var(--border); margin: 0;
+}
+.pp-block-header.pp-collapsible { cursor: pointer; user-select: none; }
+.pp-block-header.pp-collapsible:hover { background: rgba(255,255,255,.04); }
+.pp-chevron { flex-shrink: 0; color: var(--text-dim); transition: transform .15s; }
+.pp-section.pp-collapsed .pp-chevron { transform: rotate(-90deg); }
+.pp-section.pp-collapsed .pp-section-body { display: none; }
 .pp-block-header {
   padding: 10px 14px 8px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
@@ -515,7 +556,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 }
 .pp-block-type { font-size: 12px; font-weight: 700; color: var(--text-primary); letter-spacing: .5px; }
 .pp-group { padding: 10px 14px; border-bottom: 1px solid var(--border); }
-.pp-label { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; display: block; font-weight: 500; }
+.pp-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; display: block; font-weight: 500; }
 .pp-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .pp-link-btn {
   margin-left: auto; flex-shrink: 0;
@@ -592,10 +633,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .css-grad-preview { height: 14px; border-radius: 3px; margin-top: 4px; border: 1px solid var(--border); }
 /* Border / Transition / Animation builders — use existing pp-input/pp-select */
 .css-border-bld { display: block; }
-/* Activity bar CSS icon */
-#act-css { display: none; }
-/* Activity bar Elements icon */
-#act-elements { display: none; }
+/* Activity icons that start as visual-only are marked unavailable in HTML;
+   enterVisualMode/enterCodeMode toggle the 'unavailable' class. */
 /* ── Elements panel ──────────────────────────────────────────── */
 
 /* Count badge in panel header */
@@ -638,7 +677,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 }
 .elem-tab {
   flex: 1; padding: 4px 6px; border: none; background: none;
-  font-size: 10px; font-weight: 600; font-family: inherit; cursor: pointer;
+  font-size: 11px; font-weight: 600; font-family: inherit; cursor: pointer;
   color: var(--text-dim); border-radius: 4px 4px 0 0;
   border-bottom: 2px solid transparent; margin-bottom: -1px;
   transition: color .12s, border-color .12s; white-space: nowrap;
@@ -665,8 +704,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 }
 .elem-cat-hd:first-child { padding-top: 4px; }
 .elem-cat-hd__label {
-  flex: 1; font-size: 9.5px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 1px; color: var(--text-secondary);
+  flex: 1; font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .8px; color: var(--text-secondary);
 }
 .elem-cat-hd__count {
   font-size: 9px; color: var(--text-dim);
@@ -692,8 +731,8 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   background: var(--bg-mid); position: relative;
 }
 .elem-card:hover {
-  border-color: #6366f1; transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(99,102,241,.25);
+  border-color: var(--accent); transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,120,212,.25);
 }
 .elem-card:active { transform: translateY(0); cursor: grabbing; }
 .elem-card--dragging { opacity: .5; }
@@ -714,13 +753,13 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   padding: 5px 7px 5px;
 }
 .elem-name {
-  font-size: 10.5px; font-weight: 500; color: var(--text-primary);
+  font-size: 12px; font-weight: 500; color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;
 }
 
 /* "LD" badge on Living Design cards */
 .elem-ld-badge {
-  flex-shrink: 0; font-size: 8px; font-weight: 800; letter-spacing: .5px;
+  flex-shrink: 0; font-size: 10px; font-weight: 800; letter-spacing: .5px;
   background: #001e60; color: #ffc220; border-radius: 3px; padding: 1px 4px;
   margin-left: 4px; line-height: 1.6;
 }
@@ -801,7 +840,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
   cursor: pointer; transition: all .15s;
 }
-.picker-card:hover { border-color: #6366f1; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(99,102,241,.2); }
+.picker-card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,120,212,.2); }
 .picker-thumb { width: 100%; overflow: hidden; }
 .picker-thumb svg { width: 100%; height: auto; display: block; }
 .picker-name { padding: 6px 8px 1px; font-size: 12px; font-weight: 600; color: var(--text-primary); }
@@ -865,7 +904,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   transition: border-color .15s, background .15s; display: flex; flex-direction: column; align-items: center; gap: 6px;
 }
 .pmp-card:hover { border-color: var(--accent); background: var(--bg-hover); }
-.pmp-card--ai { border-color: rgba(99,102,241,.35); }
+.pmp-card--ai { border-color: rgba(0,120,212,.35); }
 .pmp-card--ai:hover { border-color: var(--accent); }
 .pmp-badge {
   position: absolute; top: -7px; right: 8px; background: var(--accent);
@@ -882,7 +921,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   padding: 28px 20px; text-align: center; cursor: default;
   transition: border-color .15s, background .15s;
 }
-.wizard-drop-zone--over { border-color: var(--accent); background: rgba(99,102,241,.06); }
+.wizard-drop-zone--over { border-color: var(--accent); background: rgba(0,120,212,.06); }
 .wizard-file-list { margin-top: 10px; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .wfl-item {
   display: flex; align-items: center; gap: 8px; padding: 5px 8px;
@@ -947,7 +986,7 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .wfu-badge--error { background: rgba(234,179,8,.12); color: #b45309; }
 .wfu-spinner {
   width: 9px; height: 9px; flex-shrink: 0;
-  border: 1.5px solid rgba(99,102,241,.25); border-top-color: var(--accent);
+  border: 1.5px solid rgba(0,120,212,.25); border-top-color: var(--accent);
   border-radius: 50%; animation: spin .65s linear infinite;
 }
 
@@ -1007,10 +1046,10 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
   padding: 3px 8px; border-radius: 4px; white-space: nowrap;
   transition: opacity .3s, color .3s;
 }
-.draft-status--idle     { opacity: 0; pointer-events: none; }
+.draft-status--idle     { color: var(--text-dim); opacity: 1; pointer-events: none; }
 .draft-status--unsaved  { color: #f59e0b; background: rgba(245,158,11,.12); }
 .draft-status--saved    { color: #4ade80; background: rgba(74,222,128,.12); }
-.draft-status--published { color: #818cf8; background: rgba(129,140,248,.12); }
+.draft-status--published { color: #4ec9b0; background: rgba(78,201,176,.12); }
 .draft-dot {
   width: 6px; height: 6px; border-radius: 50%;
   background: currentColor; flex-shrink: 0;
@@ -1100,3 +1139,36 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', system-ui,
 .design-check-item.warn { border-color: var(--orange); background: rgba(206,145,120,.1); }
 .design-check-item.info { border-color: var(--accent); background: rgba(0,120,212,.1); }
 .design-check-item.error { border-color: var(--red); background: rgba(244,67,71,.08); }
+
+/* ── Mode action bar (tools + save/publish — lives below titlebar) ─ */
+#mode-action-bar {
+  height: 38px; background: var(--bg-mid); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: flex-start;
+  padding: 0 10px; gap: 6px; flex-shrink: 0; user-select: none;
+}
+/* Thin vertical separator between toolbar button groups */
+.mab-sep {
+  width: 1px; height: 18px; background: var(--border-light); flex-shrink: 0; margin: 0 2px;
+}
+
+/* ── Section page label in Pages panel ────────────────────────── */
+#vis-section-page-label {
+  font-size: 11px; color: var(--text-dim); font-style: italic;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 120px;
+}
+
+/* ── Inspect tool text labels ──────────────────────────────────── */
+.tool-btn-label { font-size: 11px; margin-left: 2px; }
+
+/* ── Section add divider (always visible, not just on hover) ───── */
+.vc-section-divider {
+  display: flex; align-items: center; justify-content: center;
+  height: 2px; margin: 0; position: relative; cursor: pointer;
+  transition: height .2s;
+}
+.vc-section-divider:hover { height: 28px; }
+.vc-section-divider::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 50%;
+  height: 1px; background: rgba(0,120,212,.2);
+}

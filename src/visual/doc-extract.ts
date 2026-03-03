@@ -46,14 +46,32 @@ export interface PdfResult {
   truncated: boolean;
 }
 
+/** Per-slide structured data for direct slide→block mapping. */
+export interface ExtractedSlide {
+  title: string;
+  bullets: string[];
+  body: string;
+  notes: string;
+  /** Filenames of images referenced by this slide (from ppt/media/) */
+  imageFilenames: string[];
+}
+
 export interface PptxResult {
   slides: Array<{ title: string; body: string }>;
   images: Array<{ filename: string; base64: string; mediaType: string }>;
+  /** Rich per-slide data for direct slide→block conversion */
+  extractedSlides: ExtractedSlide[];
+}
+
+export interface ExtractedTable {
+  rows: string[][];
+  hasHeader: boolean;
 }
 
 export interface DocxResult {
   text: string;
   images: Array<{ filename: string; base64: string; mediaType: string }>;
+  tables?: ExtractedTable[];
 }
 
 // ── PDF extraction ────────────────────────────────────────────────────────────
@@ -118,6 +136,7 @@ export async function pptxExtract(file: File): Promise<PptxResult> {
   };
 
   const slides: PptxResult['slides'] = [];
+  const extractedSlides: ExtractedSlide[] = [];
   const images: PptxResult['images'] = [];
 
   // Sort slide XML files numerically
@@ -129,47 +148,118 @@ export async function pptxExtract(file: File): Promise<PptxResult> {
       return na - nb;
     });
 
-  for (const slideName of slideFiles) {
-    const xml = await zip.files[slideName].async('text');
-    const doc = new DOMParser().parseFromString(xml, 'text/xml');
-
-    // Find title shape: <p:sp> containing <p:ph type="title"> or <p:ph type="ctrTitle">
-    let title = '';
-    let body = '';
-    const shapes = Array.from(doc.querySelectorAll('sp'));
-    for (const sp of shapes) {
-      const ph = sp.querySelector('ph');
-      const phType = ph?.getAttribute('type') ?? '';
-      const isTitle = phType === 'title' || phType === 'ctrTitle' || phType === 'subTitle';
-      const texts = Array.from(sp.querySelectorAll('t')).map(t => t.textContent ?? '').join(' ').trim();
-      if (!texts) continue;
-      if (isTitle && !title) {
-        title = texts;
-      } else {
-        body += (body ? '\n' : '') + texts;
-      }
-    }
-
-    slides.push({ title: title || `Slide ${slides.length + 1}`, body });
-  }
-
-  // Extract embedded images from ppt/media/*
+  // Extract embedded images from ppt/media/* (needed for per-slide mapping)
   const mediaFiles = Object.keys(zip.files).filter(name =>
     /^ppt\/media\//i.test(name) && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(name),
   );
+  const mediaTypeMap: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
+  };
   for (const mediaName of mediaFiles) {
     const ext = mediaName.split('.').pop()?.toLowerCase() ?? 'png';
-    const mediaTypeMap: Record<string, string> = {
-      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-      gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
-    };
     const mediaType = mediaTypeMap[ext] ?? 'image/png';
     const base64 = await zip.files[mediaName].async('base64');
     const filename = mediaName.split('/').pop() ?? mediaName;
     images.push({ filename, base64, mediaType });
   }
 
-  return { slides, images };
+  for (let si = 0; si < slideFiles.length; si++) {
+    const slideName = slideFiles[si];
+    const xml = await zip.files[slideName].async('text');
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+
+    // Find title shape: <p:sp> containing <p:ph type="title"> or <p:ph type="ctrTitle">
+    let title = '';
+    let body = '';
+    const bullets: string[] = [];
+    const bodyParts: string[] = [];
+    const shapes = Array.from(doc.querySelectorAll('sp'));
+    for (const sp of shapes) {
+      const ph = sp.querySelector('ph');
+      const phType = ph?.getAttribute('type') ?? '';
+      const isTitle = phType === 'title' || phType === 'ctrTitle' || phType === 'subTitle';
+
+      if (isTitle) {
+        const texts = Array.from(sp.querySelectorAll('t')).map(t => t.textContent ?? '').join(' ').trim();
+        if (texts && !title) title = texts;
+      } else {
+        // Parse each paragraph in this shape separately to detect bullets
+        const paras = Array.from(sp.querySelectorAll('p'));
+        for (const p of paras) {
+          const pText = Array.from(p.querySelectorAll('t')).map(t => t.textContent ?? '').join('').trim();
+          if (!pText) continue;
+
+          // Detect bullet: pPr with buChar, buAutoNum, buNone=false, or indentation with lvl > 0
+          const pPr = p.querySelector('pPr');
+          const hasBuChar = !!pPr?.querySelector('buChar');
+          const hasBuAutoNum = !!pPr?.querySelector('buAutoNum');
+          const lvl = parseInt(pPr?.getAttribute('lvl') ?? '0', 10);
+          const isBullet = hasBuChar || hasBuAutoNum || lvl > 0;
+
+          if (isBullet) {
+            bullets.push(pText);
+          } else {
+            bodyParts.push(pText);
+          }
+        }
+      }
+    }
+
+    body = [...bodyParts, ...bullets].join('\n');
+
+    // Speaker notes: ppt/notesSlides/notesSlide{N}.xml
+    const slideNum = slideName.match(/\d+/)?.[0] ?? '';
+    let notes = '';
+    const notesPath = `ppt/notesSlides/notesSlide${slideNum}.xml`;
+    if (zip.files[notesPath]) {
+      try {
+        const notesXml = await zip.files[notesPath].async('text');
+        const notesDoc = new DOMParser().parseFromString(notesXml, 'text/xml');
+        // Notes body is in <p:sp> with <p:ph type="body"> (index 1)
+        const noteShapes = Array.from(notesDoc.querySelectorAll('sp'));
+        for (const sp of noteShapes) {
+          const ph = sp.querySelector('ph');
+          const phType = ph?.getAttribute('type') ?? '';
+          if (phType === 'body') {
+            const texts = Array.from(sp.querySelectorAll('t')).map(t => t.textContent ?? '').join(' ').trim();
+            if (texts) notes = texts;
+            break;
+          }
+        }
+      } catch { /* notes file may not parse */ }
+    }
+
+    // Per-slide image references: parse relationship file to find media targets
+    const slideImageFilenames: string[] = [];
+    const relsPath = slideName.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+    if (zip.files[relsPath]) {
+      try {
+        const relsXml = await zip.files[relsPath].async('text');
+        const relsDoc = new DOMParser().parseFromString(relsXml, 'text/xml');
+        const rels = Array.from(relsDoc.querySelectorAll('Relationship'));
+        for (const rel of rels) {
+          const target = rel.getAttribute('Target') ?? '';
+          // Targets are relative like "../media/image1.png"
+          if (/\/media\//.test(target) && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(target)) {
+            const fn = target.split('/').pop() ?? '';
+            if (fn) slideImageFilenames.push(fn);
+          }
+        }
+      } catch { /* rels file may not parse */ }
+    }
+
+    slides.push({ title: title || `Slide ${slides.length + 1}`, body });
+    extractedSlides.push({
+      title: title || `Slide ${extractedSlides.length + 1}`,
+      bullets,
+      body: bodyParts.join('\n'),
+      notes,
+      imageFilenames: slideImageFilenames,
+    });
+  }
+
+  return { slides, images, extractedSlides };
 }
 
 // ── DOCX extraction ───────────────────────────────────────────────────────────
@@ -236,7 +326,8 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     const pStyleEl = pPr?.querySelector('pStyle');
     const styleVal = pStyleEl?.getAttribute('w:val') ?? pStyleEl?.getAttribute('val') ?? '';
     const isH1     = /^(Title|Heading1)$/i.test(styleVal);
-    const isH2     = /^(Heading[23]|Subtitle)$/i.test(styleVal);
+    const isH2     = /^(Heading2|Subtitle)$/i.test(styleVal);
+    const isH3orH4 = /^(Heading[34])$/i.test(styleVal);
     const isList   = !!pPr?.querySelector('numPr'); // Word bullet / numbered list
 
     // ── Paragraph-level bold/italic default (inherited by runs) ──────────────
@@ -285,9 +376,10 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     }
 
     // ── Official heading style → straightforward ─────────────────────────────
-    if (isH1 || isH2) {
+    if (isH1 || isH2 || isH3orH4) {
       const plain = validSegs.flatMap(s => s).map(r => r.text).join('').trim();
-      metas.push({ lines: [isH1 ? `# ${plain}` : `## ${plain}`], isSubtitle: false, hasBreak });
+      const prefix = isH1 ? '#' : isH2 ? '##' : '###';
+      metas.push({ lines: [`${prefix} ${plain}`], isSubtitle: false, hasBreak });
       continue;
     }
 
@@ -410,6 +502,48 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     if (m.hasBreak) breakPending = true;
   }
 
+  // ── Phase 3: parse tables (<w:tbl>) ────────────────────────────────────
+  const tables: ExtractedTable[] = [];
+  for (const tbl of Array.from(doc.querySelectorAll('tbl'))) {
+    const rows: string[][] = [];
+    let hasHeader = false;
+
+    for (const tr of Array.from(tbl.querySelectorAll('tr'))) {
+      // Detect header row via <w:tblHeader/> on first row's properties
+      if (rows.length === 0) {
+        const trPr = tr.querySelector('trPr');
+        if (trPr?.querySelector('tblHeader')) hasHeader = true;
+      }
+
+      const cells: string[] = [];
+      for (const tc of Array.from(tr.querySelectorAll('tc'))) {
+        // Concatenate all <w:t> text within this cell
+        const cellText = Array.from(tc.querySelectorAll('t'))
+          .map(t => t.textContent ?? '')
+          .join(' ')
+          .trim();
+        cells.push(cellText);
+      }
+      if (cells.length > 0) rows.push(cells);
+    }
+
+    // Skip degenerate tables (0 rows or single-cell)
+    if (rows.length < 1 || (rows.length === 1 && rows[0].length <= 1)) continue;
+
+    // Heuristic header detection: if first row is all-caps or all-bold-style text
+    // and we didn't already detect via <w:tblHeader>
+    if (!hasHeader && rows.length >= 2) {
+      const firstRow = rows[0];
+      const allUpperOrShort = firstRow.every(cell => {
+        const letters = cell.replace(/[^A-Za-z]/g, '');
+        return (letters.length >= 2 && cell === cell.toUpperCase()) || cell.length < 3;
+      });
+      if (allUpperOrShort && firstRow.some(c => c.length >= 2)) hasHeader = true;
+    }
+
+    tables.push({ rows, hasHeader });
+  }
+
   // Extract embedded images from word/media/*
   const mediaTypeMap: Record<string, string> = {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
@@ -427,5 +561,5 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     images.push({ filename, base64, mediaType });
   }
 
-  return { text: paragraphs.join('\n'), images };
+  return { text: paragraphs.join('\n'), images, tables: tables.length > 0 ? tables : undefined };
 }
