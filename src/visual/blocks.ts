@@ -189,7 +189,7 @@ const features: BlockDef = {
   thumbnail: `<svg viewBox="0 0 280 100" xmlns="http://www.w3.org/2000/svg"><rect width="280" height="100" fill="#f8fafc"/><rect x="16" y="14" width="74" height="72" rx="6" fill="white" stroke="#e2e8f0" stroke-width="1"/><rect x="103" y="14" width="74" height="72" rx="6" fill="white" stroke="#e2e8f0" stroke-width="1"/><rect x="190" y="14" width="74" height="72" rx="6" fill="white" stroke="#e2e8f0" stroke-width="1"/><rect x="28" y="24" width="18" height="18" rx="4" fill="#6366f1"/><rect x="28" y="50" width="50" height="6" rx="2" fill="#334155"/><rect x="28" y="62" width="50" height="4" rx="2" fill="#94a3b8"/><rect x="28" y="70" width="40" height="4" rx="2" fill="#94a3b8"/><rect x="115" y="24" width="18" height="18" rx="4" fill="#10b981"/><rect x="115" y="50" width="50" height="6" rx="2" fill="#334155"/><rect x="115" y="62" width="50" height="4" rx="2" fill="#94a3b8"/><rect x="202" y="24" width="18" height="18" rx="4" fill="#f59e0b"/><rect x="202" y="50" width="50" height="6" rx="2" fill="#334155"/><rect x="202" y="62" width="50" height="4" rx="2" fill="#94a3b8"/></svg>`,
   defaultContent: () => ({
     sectionTitle: 'Why Choose Us',
-    sectionSub: 'Everything you need to build and grow online.',
+    sectionSub: '',
     card1Icon: '⚡',
     card1Title: 'Lightning Fast',
     card1Desc: 'Optimized for performance so your visitors get the best experience every time.',
@@ -210,20 +210,24 @@ const features: BlockDef = {
   }),
   render(block, theme, editing) {
     const cols = Number(block.content.columns) || 3;
-    const cards = [1, 2, 3].slice(0, cols);
+    // Only render cards that have a title — prevents empty placeholder slots
+    const cards = ([1, 2, 3] as const).slice(0, cols)
+      .filter(i => String(block.content[`card${i}Title`] ?? '').trim());
+    const activeCols = cards.length || cols;
     const shadow = block.settings.cardStyle === 'shadow' ? 'box-shadow:0 4px 24px rgba(0,0,0,.07);' : '';
     const border = block.settings.cardStyle === 'border' ? `border:1px solid #e2e8f0;` : '';
+    const sub = String(block.content.sectionSub ?? '').trim();
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:1200px;margin:0 auto">
     <div style="text-align:center;margin-bottom:52px">
-      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.5rem);font-weight:800;color:${String(block.settings.textColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:12px">${escapeHtml(block.content.sectionTitle)}</h2>
-      <p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.1rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${escapeHtml(block.content.sectionSub)}</p>
+      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.5rem);font-weight:800;color:${String(block.settings.textColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:${sub ? '12px' : '0'}">${escapeHtml(block.content.sectionTitle)}</h2>
+      ${sub ? `<p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.1rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${escapeHtml(sub)}</p>` : ''}
     </div>
-    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:28px">
+    <div style="display:grid;grid-template-columns:repeat(${activeCols},1fr);gap:28px">
       ${cards.map(i => `<div style="background:${String(block.settings.cardBg)};border-radius:${theme.radius}px;padding:36px 28px;${shadow}${border}">
         <div${editAttr(block.id, `card${i}Icon`, editing)} style="font-size:2rem;margin-bottom:16px">${escapeHtml(block.content[`card${i}Icon`])}</div>
-        <h3${editAttr(block.id, `card${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.textColor)};margin-bottom:10px;font-family:'${theme.headingFont}',sans-serif">${escapeHtml(block.content[`card${i}Title`])}</h3>
-        <p${editAttr(block.id, `card${i}Desc`, editing)} style="color:${theme.textMuted};line-height:1.7;font-size:.95rem">${escapeHtml(block.content[`card${i}Desc`])}</p>
+        <h3${editAttr(block.id, `card${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.textColor)};margin-bottom:10px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content[`card${i}Title`])}</h3>
+        <p${editAttr(block.id, `card${i}Desc`, editing)} style="color:${theme.textMuted};line-height:1.7;font-size:.95rem">${renderInlineMarkdown(block.content[`card${i}Desc`])}</p>
       </div>`).join('')}
     </div>
   </div>
@@ -1087,6 +1091,142 @@ const formBlock: BlockDef = {
   },
 };
 
+// ── Pull Quote ────────────────────────────────────────────────────────
+
+const quote: BlockDef = {
+  name: 'Pull Quote',
+  category: 'Content',
+  thumbnail: `<svg viewBox="0 0 280 100" xmlns="http://www.w3.org/2000/svg"><rect width="280" height="100" fill="#f8fafc"/><text x="20" y="56" font-size="48" fill="#6366f1" font-family="Georgia,serif" opacity=".3">"</text><rect x="60" y="28" width="180" height="10" rx="2" fill="#334155"/><rect x="70" y="44" width="160" height="8" rx="2" fill="#94a3b8"/><rect x="80" y="58" width="140" height="8" rx="2" fill="#94a3b8"/><rect x="90" y="76" width="100" height="6" rx="2" fill="#6366f1" opacity=".5"/></svg>`,
+  defaultContent: () => ({
+    quote: 'The customer experience is the next competitive battleground.',
+    attribution: 'Jerry Gregoire, Former CIO Dell',
+    showAttrib: true,
+  }),
+  defaultSettings: (theme) => ({
+    bg: theme.bgAlt,
+    accentColor: theme.accent,
+    textColor: theme.text,
+    align: 'center',
+    size: 'medium',
+  }),
+  render(block, theme, editing) {
+    const sizes: Record<string, string> = { small: '1.2rem', medium: '1.6rem', large: '2.2rem' };
+    const fontSize = sizes[String(block.settings.size)] ?? '1.6rem';
+    const align = String(block.settings.align);
+    const justify = align === 'left' ? 'flex-start' : 'center';
+    return `<section style="background:${String(block.settings.bg)};padding:60px 40px;font-family:'${theme.bodyFont}',sans-serif">
+  <div style="max-width:800px;margin:0 auto;text-align:${align}">
+    <div style="display:flex;justify-content:${justify};margin-bottom:8px">
+      <span style="font-size:5rem;color:${String(block.settings.accentColor)};line-height:.7;font-family:Georgia,serif;opacity:.4">\u201C</span>
+    </div>
+    <blockquote${editAttr(block.id, 'quote', editing)} style="font-size:${fontSize};font-style:italic;color:${String(block.settings.textColor)};line-height:1.6;margin:0 0 24px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.quote)}</blockquote>
+    ${block.content.showAttrib ? `<p${editAttr(block.id, 'attribution', editing)} style="color:${String(block.settings.accentColor)};font-size:.95rem;font-weight:600;letter-spacing:.02em">\u2014 ${escapeHtml(block.content.attribution)}</p>` : ''}
+  </div>
+</section>`;
+  },
+  settingsPanel(block) {
+    return `
+      <div class="pp-group">
+        <div class="pp-row"><input type="color" value="${String(block.settings.bg)}" class="pp-color" data-key="settings.bg"><span class="pp-color-label">Background</span></div>
+        <div class="pp-row"><input type="color" value="${String(block.settings.accentColor)}" class="pp-color" data-key="settings.accentColor"><span class="pp-color-label">Accent Color</span></div>
+        <div class="pp-row"><input type="color" value="${String(block.settings.textColor)}" class="pp-color" data-key="settings.textColor"><span class="pp-color-label">Text Color</span></div>
+      </div>
+      <div class="pp-group">
+        <label class="pp-label">Alignment</label>
+        <div class="pp-seg">
+          <button class="pp-seg-btn ${block.settings.align === 'left' ? 'active' : ''}" data-val="left" data-key="settings.align">Left</button>
+          <button class="pp-seg-btn ${block.settings.align === 'center' ? 'active' : ''}" data-val="center" data-key="settings.align">Center</button>
+        </div>
+      </div>
+      <div class="pp-group">
+        <label class="pp-label">Quote Size</label>
+        <select class="pp-select" data-key="settings.size">
+          <option value="small" ${block.settings.size === 'small' ? 'selected' : ''}>Small</option>
+          <option value="medium" ${block.settings.size === 'medium' ? 'selected' : ''}>Medium</option>
+          <option value="large" ${block.settings.size === 'large' ? 'selected' : ''}>Large</option>
+        </select>
+      </div>
+      <div class="pp-group">
+        <label class="pp-toggle"><input type="checkbox" ${block.content.showAttrib ? 'checked' : ''} data-key="content.showAttrib"><span>Show attribution</span></label>
+      </div>`;
+  },
+};
+
+// ── Text Columns ──────────────────────────────────────────────────────
+
+const columns: BlockDef = {
+  name: 'Columns',
+  category: 'Content',
+  thumbnail: `<svg viewBox="0 0 280 100" xmlns="http://www.w3.org/2000/svg"><rect width="280" height="100" fill="#fff"/><rect x="16" y="10" width="76" height="80" rx="4" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/><rect x="102" y="10" width="76" height="80" rx="4" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/><rect x="188" y="10" width="76" height="80" rx="4" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/><rect x="24" y="18" width="60" height="7" rx="2" fill="#334155"/><rect x="24" y="30" width="60" height="5" rx="2" fill="#94a3b8"/><rect x="24" y="40" width="54" height="5" rx="2" fill="#94a3b8"/><rect x="110" y="18" width="60" height="7" rx="2" fill="#334155"/><rect x="110" y="30" width="60" height="5" rx="2" fill="#94a3b8"/><rect x="110" y="40" width="54" height="5" rx="2" fill="#94a3b8"/><rect x="196" y="18" width="60" height="7" rx="2" fill="#334155"/><rect x="196" y="30" width="60" height="5" rx="2" fill="#94a3b8"/><rect x="196" y="40" width="54" height="5" rx="2" fill="#94a3b8"/></svg>`,
+  defaultContent: () => ({
+    heading: 'Our Approach',
+    col1Title: 'Discover',
+    col1Text: 'We start by deeply understanding your goals, your audience, and the challenges you face.',
+    col2Title: 'Design',
+    col2Text: 'Our team creates tailored solutions that balance functionality with beautiful aesthetics.',
+    col3Title: 'Deliver',
+    col3Text: 'We ship fast, iterate based on real feedback, and stand behind everything we build.',
+    cols: '3',
+  }),
+  defaultSettings: (theme) => ({
+    bg: theme.bg,
+    headingColor: theme.primary,
+    titleColor: theme.text,
+    textColor: theme.textMuted,
+  }),
+  render(block, theme, editing) {
+    const cols = String(block.content.cols) === '2' ? 2 : 3;
+    const colItems = [1, 2, 3].slice(0, cols);
+    return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
+  <div style="max-width:1100px;margin:0 auto">
+    ${block.content.heading ? `<h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.headingColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>` : ''}
+    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:40px">
+      ${colItems.map(i => `<div>
+        <h3${editAttr(block.id, `col${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.titleColor)};margin-bottom:12px;font-family:'${theme.headingFont}',sans-serif">${escapeHtml(block.content[`col${i}Title`])}</h3>
+        <p${editAttr(block.id, `col${i}Text`, editing)} style="color:${String(block.settings.textColor)};line-height:1.7;font-size:.95rem">${renderInlineMarkdown(block.content[`col${i}Text`])}</p>
+      </div>`).join('')}
+    </div>
+  </div>
+</section>`;
+  },
+  settingsPanel(block) {
+    const cols = String(block.content.cols);
+    return `
+      <div class="pp-group">
+        <label class="pp-label">Columns</label>
+        <div class="pp-seg">
+          <button class="pp-seg-btn ${cols === '2' ? 'active' : ''}" data-val="2" data-key="content.cols">2 Columns</button>
+          <button class="pp-seg-btn ${cols !== '2' ? 'active' : ''}" data-val="3" data-key="content.cols">3 Columns</button>
+        </div>
+      </div>
+      <div class="pp-group">
+        <label class="pp-label">Section Heading</label>
+        <input type="text" value="${escapeHtml(block.content.heading)}" class="pp-input" data-key="content.heading" placeholder="Optional heading">
+      </div>
+      <div class="pp-group">
+        <label class="pp-label">Column 1</label>
+        <input type="text" value="${escapeHtml(block.content.col1Title)}" class="pp-input" data-key="content.col1Title" placeholder="Title">
+        <textarea class="pp-input" data-key="content.col1Text" rows="3" style="margin-top:4px;resize:vertical">${escapeHtml(block.content.col1Text)}</textarea>
+      </div>
+      <div class="pp-group">
+        <label class="pp-label">Column 2</label>
+        <input type="text" value="${escapeHtml(block.content.col2Title)}" class="pp-input" data-key="content.col2Title" placeholder="Title">
+        <textarea class="pp-input" data-key="content.col2Text" rows="3" style="margin-top:4px;resize:vertical">${escapeHtml(block.content.col2Text)}</textarea>
+      </div>
+      <div class="pp-group" data-show-when-cols="3" ${cols === '2' ? 'style="display:none"' : ''}>
+        <label class="pp-label">Column 3</label>
+        <input type="text" value="${escapeHtml(block.content.col3Title)}" class="pp-input" data-key="content.col3Title" placeholder="Title">
+        <textarea class="pp-input" data-key="content.col3Text" rows="3" style="margin-top:4px;resize:vertical">${escapeHtml(block.content.col3Text)}</textarea>
+      </div>
+      <div class="pp-group">
+        <div class="pp-row"><input type="color" value="${String(block.settings.bg)}" class="pp-color" data-key="settings.bg"><span class="pp-color-label">Background</span></div>
+        <div class="pp-row"><input type="color" value="${String(block.settings.headingColor)}" class="pp-color" data-key="settings.headingColor"><span class="pp-color-label">Heading Color</span></div>
+        <div class="pp-row"><input type="color" value="${String(block.settings.titleColor)}" class="pp-color" data-key="settings.titleColor"><span class="pp-color-label">Title Color</span></div>
+        <div class="pp-row"><input type="color" value="${String(block.settings.textColor)}" class="pp-color" data-key="settings.textColor"><span class="pp-color-label">Text Color</span></div>
+      </div>`;
+  },
+};
+
 // ── Registry ──────────────────────────────────────────────────────────
 export const BLOCK_DEFS: Record<string, BlockDef> = {
   nav, hero, features, split, stats, text: textBlock,
@@ -1094,6 +1234,7 @@ export const BLOCK_DEFS: Record<string, BlockDef> = {
   custom: customBlock,
   embed, image: imageBlock, video: videoBlock, divider,
   logos, pricing, faq, form: formBlock,
+  quote, columns,
   ...LD_BLOCK_DEFS,
 };
 

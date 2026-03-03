@@ -6,6 +6,7 @@
 import { escapeHtml, renderInlineMarkdown, sanitizeUrl } from '../utils';
 import { editAttr } from './blocks';
 import type { BlockDef } from './blocks';
+import type { Theme } from '../types';
 
 // ── LD Design Tokens (inline-style values) ────────────────────────────
 // These mirror tokens.css but are hardcoded here so render() can produce
@@ -55,6 +56,33 @@ const LD = {
   shadowTile:   '0 4px 20px rgba(0,0,0,.08)',
 } as const;
 
+// ── Color math helpers ────────────────────────────────────────────────
+
+/** Blend a hex color with white. opacity 0 = pure white, 1 = full color. */
+function tintHex(hex: string, opacity: number): string {
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  if (h.length !== 6) return hex; // fallback for invalid
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const rr = Math.round(r * opacity + 255 * (1 - opacity));
+  const gg = Math.round(g * opacity + 255 * (1 - opacity));
+  const bb = Math.round(b * opacity + 255 * (1 - opacity));
+  return `#${rr.toString(16).padStart(2, '0')}${gg.toString(16).padStart(2, '0')}${bb.toString(16).padStart(2, '0')}`;
+}
+
+/** Returns true if the hex color is perceived as dark (needs white text). */
+function isHexDark(hex: string): boolean {
+  let h = hex.replace('#', '');
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  if (h.length !== 6) return false;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 140;
+}
+
 // ── Shared helpers ────────────────────────────────────────────────────
 
 /**
@@ -66,38 +94,41 @@ const LD = {
  *
  * Hover is handled via onmouseenter/onmouseleave on the element itself.
  */
-function ldBtn(text: string, href: string, style: 'primary' | 'secondary' | 'outline-white' | 'ghost'): string {
+function ldBtn(text: string, href: string, style: 'primary' | 'secondary' | 'outline-white' | 'ghost', t?: Theme): string {
   // Base: pill shape, bold, no underline, inline-flex centred
   const base = `display:inline-flex;align-items:center;justify-content:center;
                 border-radius:${LD.radius};font-family:${LD.font};font-weight:700;
                 text-decoration:none;cursor:pointer;transition:background .15s,border-color .15s;
                 white-space:nowrap;`;
+  const btnColor  = t?.accent ?? LD.blue;
+  const cardColor = t?.bg     ?? LD.white;
+  const bodyText  = t?.text   ?? LD.textPrimary;
   const variants: Record<string, string> = {
     // h-10 desktop = 40px, px-6, font-size 16px
     primary:
       `${base}height:40px;padding:0 24px;font-size:16px;
-       background:${LD.blue};color:${LD.white};border:2px solid transparent;`,
+       background:${btnColor};color:${cardColor};border:2px solid transparent;`,
     // white bg, 1px border matching text, h-10
     secondary:
       `${base}height:40px;padding:0 24px;font-size:16px;
-       background:${LD.white};color:${LD.blue};border:1px solid ${LD.blue};`,
+       background:${cardColor};color:${btnColor};border:1px solid ${btnColor};`,
     // for use on coloured/dark backgrounds
     'outline-white':
       `${base}height:40px;padding:0 24px;font-size:16px;
        background:transparent;color:${LD.white};border:2px solid rgba(255,255,255,.7);`,
-    // h-12 = 48px, navy border, used for benefits / values CTAs
+    // h-12 = 48px, body text border, used for major CTAs on light bg
     ghost:
       `${base}height:48px;padding:0 24px;font-size:18px;
-       background:${LD.white};color:${LD.textPrimary};border:2px solid ${LD.textPrimary};`,
+       background:${cardColor};color:${bodyText};border:2px solid ${bodyText};`,
   };
-  const hoverColors: Record<string, string> = {
+  const hoverBg: Record<string, string> = {
     primary:        LD.blueHover,
-    secondary:      '#f0f8ff',
+    secondary:      t?.bgAlt ?? '#f0f8ff',
     'outline-white': 'rgba(255,255,255,.12)',
-    ghost:          '#f4f4f4',
+    ghost:          t?.bgAlt ?? '#f4f4f4',
   };
-  const hIn  = `this.style.background='${hoverColors[style]}'`;
-  const hOut = `this.style.background='${style === 'primary' ? LD.blue : style === 'ghost' ? LD.white : style === 'secondary' ? LD.white : 'transparent'}'`;
+  const hIn  = `this.style.background='${hoverBg[style]}'`;
+  const hOut = `this.style.background='${style === 'primary' ? btnColor : style === 'ghost' ? cardColor : style === 'secondary' ? cardColor : 'transparent'}'`;
   return `<a href="${sanitizeUrl(escapeHtml(href))}" style="${variants[style]}" onmouseenter="${hIn}" onmouseleave="${hOut}">${escapeHtml(text)}</a>`;
 }
 
@@ -115,19 +146,6 @@ export function walmartSparkSvg(size = 28, color: string = LD.yellow): string {
     <path d="M8.738 17.4209C8.08042 17.5579 2.2595 20.262 1.74028 20.566C0.553998 21.2604 0.147875 22.798 0.832813 24.0002C1.51775 25.2029 3.0344 25.6146 4.22015 24.9202C4.7399 24.6162 9.95953 20.8577 10.4056 20.3489C10.917 19.7655 11.0053 18.9313 10.6271 18.2673C10.2489 17.6033 9.49186 17.2635 8.738 17.4209Z"/>
     <path d="M4.2201 7.07998C3.03382 6.38556 1.51717 6.79784 0.832759 7.99999C0.147822 9.20268 0.554471 10.7403 1.74022 11.4342C2.25998 11.7382 8.08037 14.4422 8.73795 14.5793C9.4918 14.7366 10.2488 14.3974 10.6271 13.7329C11.0053 13.0689 10.9169 12.2342 10.4056 11.6513C9.95948 11.1424 4.73985 7.38398 4.2201 7.07998Z"/>
     <path d="M14.5 0C13.1306 0 12.0201 1.12535 12.0201 2.51418C12.0201 3.12219 12.6208 9.5847 12.8323 10.2311C13.0748 10.9719 13.7435 11.4663 14.5 11.4663C15.2564 11.4663 15.9251 10.9714 16.1676 10.2311C16.3791 9.5847 16.9798 3.12272 16.9798 2.51418C16.9798 1.12589 15.8698 0 14.5 0Z"/>
-  </svg>`;
-}
-
-/**
- * Sam's Club diamond mark — inline SVG using Sam's Club brand blue (#002e99).
- * A simplified four-petal/diamond shape representing the Sam's Club visual identity.
- * Used where Sam's Club branding is needed without loading an external asset.
- */
-export function samsClubSvg(size = 28, color = '#002e99'): string {
-  return `<svg width="${size}" height="${size}" viewBox="0 0 32 32" fill="${color}" xmlns="http://www.w3.org/2000/svg" aria-label="Sam's Club">
-    <path d="M16 2C16 2 10 9 10 16C10 23 16 30 16 30C16 30 22 23 22 16C22 9 16 2 16 2Z" opacity=".9"/>
-    <path d="M2 16C2 16 9 10 16 10C23 10 30 16 30 16C30 16 23 22 16 22C9 22 2 16 2 16Z" opacity=".9"/>
-    <circle cx="16" cy="16" r="3.5"/>
   </svg>`;
 }
 
@@ -153,18 +171,19 @@ export const ldNav: BlockDef = {
     ctaText: 'Get Started', ctaHref: '#contact',
     showCta: true,
   }),
-  defaultSettings: (_theme) => ({
+  defaultSettings: (theme) => ({
     sticky: true,
     showSpark: true,
+    navBg: theme.primary,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const pos = block.settings.sticky ? 'position:sticky;top:0;z-index:100;' : '';
     const links = [
       { t: block.content.link1Text, h: block.content.link1Href, f: 'link1Text' },
       { t: block.content.link2Text, h: block.content.link2Href, f: 'link2Text' },
       { t: block.content.link3Text, h: block.content.link3Href, f: 'link3Text' },
     ];
-    return `<nav style="${pos}background:${LD.navy};font-family:${LD.font}">
+    return `<nav style="${pos}background:${String(block.settings.navBg)};font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto;padding:0 32px;height:68px;display:flex;align-items:center;justify-content:space-between">
     <div style="display:flex;align-items:center;gap:10px">
       ${block.settings.showSpark ? walmartSparkSvg(24) : ''}
@@ -172,7 +191,7 @@ export const ldNav: BlockDef = {
     </div>
     <div style="display:flex;gap:24px;align-items:center">
       ${links.map(l => `<a href="${sanitizeUrl(escapeHtml(l.h as string))}"${editAttr(block.id, l.f, editing)} style="color:rgba(255,255,255,.85);text-decoration:none;font-size:14px;font-weight:500">${escapeHtml(l.t)}</a>`).join('')}
-      ${block.content.showCta ? ldBtn(block.content.ctaText as string, block.content.ctaHref as string, 'primary') : ''}
+      ${block.content.showCta ? ldBtn(block.content.ctaText as string, block.content.ctaHref as string, 'primary', theme) : ''}
     </div>
   </div>
 </nav>`;
@@ -189,6 +208,9 @@ export const ldNav: BlockDef = {
         <label class="pp-label">CTA Button</label>
         <input type="text" value="${escapeHtml(block.content.ctaHref)}" class="pp-input" data-key="content.ctaHref" placeholder="Button URL">
         <label class="pp-toggle" style="margin-top:6px"><input type="checkbox" ${block.content.showCta ? 'checked' : ''} data-key="content.showCta"><span>Show CTA button</span></label>
+      </div>
+      <div class="pp-group">
+        <div class="pp-row"><input type="color" value="${String(block.settings.navBg)}" class="pp-color" data-key="settings.navBg"><span class="pp-color-label">Nav Background</span></div>
       </div>
       <div class="pp-group">
         <label class="pp-toggle"><input type="checkbox" ${block.settings.sticky ? 'checked' : ''} data-key="settings.sticky"><span>Sticky (scroll with page)</span></label>
@@ -218,11 +240,12 @@ export const ldHero: BlockDef = {
     btn2Text: 'Learn More',   btn2Href: '#about',
     showBtn2: true,
   }),
-  defaultSettings: (_theme) => ({
+  defaultSettings: (theme) => ({
     height: 'large',
     align: 'left',
+    bg:     theme.primary,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const heights: Record<string, string> = {
       small: '320px', medium: '460px', large: '580px', full: '100vh',
     };
@@ -230,7 +253,7 @@ export const ldHero: BlockDef = {
     const textA   = String(block.settings.align);
     const justify = textA === 'center' ? 'center' : textA === 'right' ? 'flex-end' : 'flex-start';
 
-    return `<section style="background:${LD.navy};min-height:${minH};display:flex;align-items:center;font-family:${LD.font};position:relative;overflow:hidden">
+    return `<section style="background:${String(block.settings.bg)};min-height:${minH};display:flex;align-items:center;font-family:${LD.font};position:relative;overflow:hidden">
   <!-- decorative circles -->
   <div style="position:absolute;right:-120px;top:-80px;width:480px;height:480px;border-radius:50%;border:60px solid ${LD.blue};opacity:.12;pointer-events:none"></div>
   <div style="position:absolute;right:-60px;top:-20px;width:300px;height:300px;border-radius:50%;border:40px solid ${LD.blue};opacity:.1;pointer-events:none"></div>
@@ -239,8 +262,8 @@ export const ldHero: BlockDef = {
       <h1${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2.4rem,5vw,3.8rem);font-weight:700;color:${LD.white};line-height:1.15;letter-spacing:-.04em;margin-bottom:20px">${renderInlineMarkdown(block.content.heading)}</h1>
       <p${editAttr(block.id, 'subheading', editing)} style="font-size:clamp(1rem,2vw,1.2rem);color:rgba(255,255,255,.8);line-height:1.6;margin-bottom:36px;max-width:520px;${textA === 'center' ? 'margin-left:auto;margin-right:auto' : ''}">${renderInlineMarkdown(block.content.subheading)}</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:${justify}">
-        ${ldBtn(block.content.btn1Text as string, block.content.btn1Href as string, 'primary')}
-        ${block.content.showBtn2 ? ldBtn(block.content.btn2Text as string, block.content.btn2Href as string, 'outline-white') : ''}
+        ${ldBtn(block.content.btn1Text as string, block.content.btn1Href as string, 'primary', theme)}
+        ${block.content.showBtn2 ? ldBtn(block.content.btn2Text as string, block.content.btn2Href as string, 'outline-white', theme) : ''}
       </div>
     </div>
   </div>
@@ -248,6 +271,9 @@ export const ldHero: BlockDef = {
   },
   settingsPanel(block) {
     return `
+      <div class="pp-group">
+        <div class="pp-row"><input type="color" value="${String(block.settings.bg)}" class="pp-color" data-key="settings.bg"><span class="pp-color-label">Background</span></div>
+      </div>
       <div class="pp-group">
         <label class="pp-label">Height</label>
         <select class="pp-select" data-key="settings.height">
@@ -300,12 +326,12 @@ export const ldFeatures: BlockDef = {
     c3Icon: '♿', c3Title: 'Accessible',        c3Desc: 'WCAG 2.1 AA compliant out of the box — designed for everyone.',
     columns: 3,
   }),
-  defaultSettings: (_theme) => ({
-    bg:     LD.bgAlt,
-    cardBg: LD.white,
+  defaultSettings: (theme) => ({
+    bg:     theme.bgAlt,
+    cardBg: theme.bg,
     cardStyle: 'shadow',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const cols   = Math.min(Math.max(Number(block.content.columns) || 3, 1), 3);
     const shadow = block.settings.cardStyle === 'shadow' ? `box-shadow:${LD.shadow};` : '';
     const border = block.settings.cardStyle === 'border' ? `border:1.5px solid ${LD.border};` : '';
@@ -314,14 +340,14 @@ export const ldFeatures: BlockDef = {
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto">
     <div style="text-align:center;margin-bottom:52px">
-      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:700;color:${LD.textPrimary};letter-spacing:-.03em;margin-bottom:12px">${escapeHtml(block.content.sectionTitle)}</h2>
-      <p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.05rem;color:${LD.textSec};max-width:520px;margin:0 auto;line-height:1.6">${escapeHtml(block.content.sectionSub)}</p>
+      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:700;color:${theme.text};letter-spacing:-.03em;margin-bottom:12px">${escapeHtml(block.content.sectionTitle)}</h2>
+      <p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.05rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${escapeHtml(block.content.sectionSub)}</p>
     </div>
     <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:24px">
       ${cards.map(i => `<div style="background:${String(block.settings.cardBg)};border-radius:${LD.radiusLg};padding:32px 28px;${shadow}${border}">
         <div${editAttr(block.id, `c${i}Icon`, editing)} style="font-size:2rem;margin-bottom:16px">${escapeHtml(block.content[`c${i}Icon`] ?? '')}</div>
-        <h3${editAttr(block.id, `c${i}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${LD.textPrimary};margin-bottom:10px;letter-spacing:-.02em">${escapeHtml(block.content[`c${i}Title`] ?? '')}</h3>
-        <p${editAttr(block.id, `c${i}Desc`, editing)} style="color:${LD.textSec};line-height:1.65;font-size:.95rem">${escapeHtml(block.content[`c${i}Desc`] ?? '')}</p>
+        <h3${editAttr(block.id, `c${i}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${theme.text};margin-bottom:10px;letter-spacing:-.02em">${escapeHtml(block.content[`c${i}Title`] ?? '')}</h3>
+        <p${editAttr(block.id, `c${i}Desc`, editing)} style="color:${theme.textMuted};line-height:1.65;font-size:.95rem">${escapeHtml(block.content[`c${i}Desc`] ?? '')}</p>
       </div>`).join('')}
     </div>
   </div>
@@ -375,10 +401,10 @@ export const ldStats: BlockDef = {
     s4Val: '#1',     s4Label: 'Retailer in the US',
     columns: 4,
   }),
-  defaultSettings: (_theme) => ({
-    bg:          LD.navy,
-    valColor:    LD.white,
-    accentColor: LD.yellow,
+  defaultSettings: (theme) => ({
+    bg:          theme.primary,
+    valColor:    theme.bg,
+    accentColor: theme.accent,
     labelColor:  'rgba(255,255,255,0.65)',
   }),
   render(block, _theme, editing) {
@@ -434,7 +460,7 @@ export const ldBanner: BlockDef = {
     showAction: true,
   }),
   defaultSettings: (_theme) => ({}),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const variant = String(block.content.variant) as 'info' | 'success' | 'warning' | 'error';
     const variantStyles = {
       info:    { bg: LD.blueLight,   bar: LD.blue,   icon: LD.blue,   iconPath: 'M8 7v5M8 13.5v.5', circle: true },
@@ -450,8 +476,8 @@ export const ldBanner: BlockDef = {
     <path d="${v.iconPath}" stroke="${v.icon}" stroke-width="1.5" stroke-linecap="round"/>
   </svg>
   <div style="flex:1">
-    <p${editAttr(block.id, 'title', editing)} style="font-size:15px;font-weight:700;color:${LD.textPrimary};margin:0 0 4px">${escapeHtml(block.content.title)}</p>
-    <p${editAttr(block.id, 'message', editing)} style="font-size:14px;color:${LD.textSec};margin:0;line-height:1.5">${escapeHtml(block.content.message)}</p>
+    <p${editAttr(block.id, 'title', editing)} style="font-size:15px;font-weight:700;color:${theme.text};margin:0 0 4px">${escapeHtml(block.content.title)}</p>
+    <p${editAttr(block.id, 'message', editing)} style="font-size:14px;color:${theme.textMuted};margin:0;line-height:1.5">${escapeHtml(block.content.message)}</p>
     ${block.content.showAction ? `<a href="${sanitizeUrl(escapeHtml(block.content.actionHref as string))}"${editAttr(block.id, 'actionText', editing)} style="display:inline-block;margin-top:10px;font-size:14px;font-weight:700;color:${v.bar};text-decoration:underline;text-underline-offset:2px">${escapeHtml(block.content.actionText)}</a>` : ''}
   </div>
 </div>`;
@@ -495,12 +521,12 @@ export const ldCta: BlockDef = {
     btn2Text: 'Talk to Sales',  btn2Href: '#contact',
     showBtn2: true,
   }),
-  defaultSettings: (_theme) => ({
-    gradientFrom: LD.navy,
-    gradientTo:   LD.blue,
+  defaultSettings: (theme) => ({
+    gradientFrom: theme.primary,
+    gradientTo:   theme.accent,
     align: 'center',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const textA   = String(block.settings.align);
     const justify = textA === 'center' ? 'center' : textA === 'right' ? 'flex-end' : 'flex-start';
     return `<section style="background:linear-gradient(135deg,${String(block.settings.gradientFrom)} 0%,${String(block.settings.gradientTo)} 100%);padding:80px 40px;font-family:${LD.font};text-align:${textA}">
@@ -508,8 +534,8 @@ export const ldCta: BlockDef = {
     <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.8rem,4vw,2.8rem);font-weight:700;color:${LD.white};letter-spacing:-.04em;margin-bottom:14px;line-height:1.2">${renderInlineMarkdown(block.content.heading)}</h2>
     <p${editAttr(block.id, 'subheading', editing)} style="font-size:1.1rem;color:rgba(255,255,255,.8);margin-bottom:36px;line-height:1.6">${renderInlineMarkdown(block.content.subheading)}</p>
     <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:${justify}">
-      ${ldBtn(block.content.btn1Text as string, block.content.btn1Href as string, 'primary')}
-      ${block.content.showBtn2 ? ldBtn(block.content.btn2Text as string, block.content.btn2Href as string, 'outline-white') : ''}
+      ${ldBtn(block.content.btn1Text as string, block.content.btn1Href as string, 'primary', theme)}
+      ${block.content.showBtn2 ? ldBtn(block.content.btn2Text as string, block.content.btn2Href as string, 'outline-white', theme) : ''}
     </div>
   </div>
 </section>`;
@@ -560,43 +586,43 @@ export const ldForm: BlockDef = {
     submitText: 'Send Message',
     formAction: '#',
   }),
-  defaultSettings: (_theme) => ({
-    bg:      LD.bgAlt,
-    cardBg:  LD.white,
+  defaultSettings: (theme) => ({
+    bg:      theme.bgAlt,
+    cardBg:  theme.bg,
     layout:  'split',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const isSplit = block.settings.layout === 'split';
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:${LD.font}">
   <div style="max-width:1000px;margin:0 auto;${isSplit ? 'display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:start' : 'max-width:640px'}">
     ${isSplit ? `<div>
-      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:700;color:${LD.textPrimary};letter-spacing:-.04em;margin-bottom:14px;line-height:1.2">${renderInlineMarkdown(block.content.heading)}</h2>
-      <p${editAttr(block.id, 'subheading', editing)} style="font-size:1.05rem;color:${LD.textSec};line-height:1.65">${renderInlineMarkdown(block.content.subheading)}</p>
+      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:700;color:${theme.text};letter-spacing:-.04em;margin-bottom:14px;line-height:1.2">${renderInlineMarkdown(block.content.heading)}</h2>
+      <p${editAttr(block.id, 'subheading', editing)} style="font-size:1.05rem;color:${theme.textMuted};line-height:1.65">${renderInlineMarkdown(block.content.subheading)}</p>
       <div style="margin-top:36px;display:flex;flex-direction:column;gap:16px">
-        <div style="display:flex;align-items:center;gap:12px;color:${LD.textSec};font-size:.95rem">
+        <div style="display:flex;align-items:center;gap:12px;color:${theme.textMuted};font-size:.95rem">
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="9" stroke="${LD.blue}" stroke-width="1.5"/><path d="M7 10l2 2 4-4" stroke="${LD.blue}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>Fast response within 24 hours</span>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;color:${LD.textSec};font-size:.95rem">
+        <div style="display:flex;align-items:center;gap:12px;color:${theme.textMuted};font-size:.95rem">
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="9" stroke="${LD.blue}" stroke-width="1.5"/><path d="M7 10l2 2 4-4" stroke="${LD.blue}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>Dedicated support team</span>
         </div>
       </div>
-    </div>` : `<div style="text-align:center;margin-bottom:40px"><h2${editAttr(block.id, 'heading', editing)} style="font-size:2rem;font-weight:700;color:${LD.textPrimary}">${renderInlineMarkdown(block.content.heading)}</h2><p${editAttr(block.id, 'subheading', editing)} style="color:${LD.textSec};margin-top:8px">${renderInlineMarkdown(block.content.subheading)}</p></div>`}
+    </div>` : `<div style="text-align:center;margin-bottom:40px"><h2${editAttr(block.id, 'heading', editing)} style="font-size:2rem;font-weight:700;color:${theme.text}">${renderInlineMarkdown(block.content.heading)}</h2><p${editAttr(block.id, 'subheading', editing)} style="color:${theme.textMuted};margin-top:8px">${renderInlineMarkdown(block.content.subheading)}</p></div>`}
     <form action="${sanitizeUrl(escapeHtml(block.content.formAction as string))}" method="post"
       style="background:${String(block.settings.cardBg)};border-radius:${LD.radiusLg};padding:36px;box-shadow:${LD.shadow}">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
         <div>
-          <label style="display:block;font-size:13px;font-weight:700;color:${LD.textPrimary};margin-bottom:6px">Name</label>
+          <label style="display:block;font-size:13px;font-weight:700;color:${theme.text};margin-bottom:6px">Name</label>
           <input type="text" placeholder="${escapeHtml(block.content.namePlaceholder)}" required style="width:100%;height:44px;padding:0 14px;font-size:15px;border:1.5px solid ${LD.border};border-radius:${LD.radiusMd};background:${LD.white};font-family:${LD.font};outline:none">
         </div>
         <div>
-          <label style="display:block;font-size:13px;font-weight:700;color:${LD.textPrimary};margin-bottom:6px">Email</label>
+          <label style="display:block;font-size:13px;font-weight:700;color:${theme.text};margin-bottom:6px">Email</label>
           <input type="email" placeholder="${escapeHtml(block.content.emailPlaceholder)}" required style="width:100%;height:44px;padding:0 14px;font-size:15px;border:1.5px solid ${LD.border};border-radius:${LD.radiusMd};background:${LD.white};font-family:${LD.font};outline:none">
         </div>
       </div>
       <div style="margin-bottom:20px">
-        <label style="display:block;font-size:13px;font-weight:700;color:${LD.textPrimary};margin-bottom:6px">Message</label>
+        <label style="display:block;font-size:13px;font-weight:700;color:${theme.text};margin-bottom:6px">Message</label>
         <textarea placeholder="${escapeHtml(block.content.messagePlaceholder)}" rows="5" style="width:100%;padding:12px 14px;font-size:15px;border:1.5px solid ${LD.border};border-radius:${LD.radiusMd};background:${LD.white};font-family:${LD.font};resize:vertical;outline:none;line-height:1.5"></textarea>
       </div>
       <button type="submit" style="${`display:inline-flex;align-items:center;justify-content:center;width:100%;height:48px;border-radius:${LD.radius};background:${LD.blue};color:${LD.white};border:none;font-family:${LD.font};font-size:15px;font-weight:700;cursor:pointer`}"${editAttr(block.id, 'submitText', editing)}>${escapeHtml(block.content.submitText)}</button>
@@ -647,10 +673,10 @@ export const ldAnnouncement: BlockDef = {
   defaultSettings: (_theme) => ({
     dismissible: false,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const variant = String(block.content.variant);
     const bg      = variant === 'yellow' ? LD.yellow   : variant === 'navy' ? LD.navy : LD.trueBlue;
-    const color   = variant === 'yellow' ? LD.textPrimary : LD.white;
+    const color   = variant === 'yellow' ? theme.text : LD.white;
     const linkClr = variant === 'yellow' ? LD.navy : 'rgba(255,255,255,.85)';
     return `<div style="background:${bg};padding:10px 32px;font-family:${LD.font};display:flex;align-items:center;justify-content:center;gap:12px;min-height:44px">
   <p${editAttr(block.id, 'message', editing)} style="font-size:14px;font-weight:500;color:${color};margin:0;line-height:1.4;text-align:center">${escapeHtml(block.content.message)}</p>
@@ -703,18 +729,18 @@ export const ldProductTiles: BlockDef = {
     columns:   4,
     showTitle: true,
   }),
-  defaultSettings: (_theme) => ({
-    bg:     LD.bgAlt,
-    cardBg: LD.white,
+  defaultSettings: (theme) => ({
+    bg:     theme.bgAlt,
+    cardBg: theme.bg,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const cols  = Math.min(Math.max(Number(block.content.columns) || 4, 2), 4);
     const tiles = Array.from({ length: cols }, (_, i) => i + 1);
     const imgPH = `background:${LD.skyBlue};opacity:.5;`; // placeholder if no image
 
     return `<section style="background:${String(block.settings.bg)};padding:60px 40px;font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto">
-    ${block.content.showTitle ? `<h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.5rem,3vw,2rem);font-weight:${LD.fontBold};color:${LD.textPrimary};letter-spacing:-.03em;margin-bottom:28px">${escapeHtml(block.content.sectionTitle)}</h2>` : ''}
+    ${block.content.showTitle ? `<h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.5rem,3vw,2rem);font-weight:${LD.fontBold};color:${theme.text};letter-spacing:-.03em;margin-bottom:28px">${escapeHtml(block.content.sectionTitle)}</h2>` : ''}
     <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:16px">
       ${tiles.map(i => {
         const imgUrl = String(block.content[`p${i}Img`] || '');
@@ -724,7 +750,7 @@ export const ldProductTiles: BlockDef = {
         return `<div style="background:${String(block.settings.cardBg)};border-radius:${LD.radiusFrame};padding:20px;box-shadow:${LD.shadowTile};display:flex;flex-direction:column;gap:12px">
           <div style="width:100%;aspect-ratio:1;border-radius:${LD.radiusMd};${imgStyle}"></div>
           <div style="flex:1">
-            <p${editAttr(block.id, `p${i}Name`, editing)} style="font-size:14px;font-weight:${LD.fontMed};color:${LD.textPrimary};line-height:1.4;margin-bottom:4px">${escapeHtml(block.content[`p${i}Name`] ?? '')}</p>
+            <p${editAttr(block.id, `p${i}Name`, editing)} style="font-size:14px;font-weight:${LD.fontMed};color:${theme.text};line-height:1.4;margin-bottom:4px">${escapeHtml(block.content[`p${i}Name`] ?? '')}</p>
             <p${editAttr(block.id, `p${i}Price`, editing)} style="font-size:22px;font-weight:${LD.fontLight};color:${LD.trueBlue};letter-spacing:-.03em;line-height:1">${escapeHtml(block.content[`p${i}Price`] ?? '')}</p>
           </div>
           <a href="${sanitizeUrl(escapeHtml(String(block.content[`p${i}Href`] ?? '#')))}" style="display:flex;align-items:center;justify-content:center;height:40px;border-radius:${LD.radius};background:${LD.blue};color:${LD.white};font-family:${LD.font};font-size:13px;font-weight:${LD.fontBold};text-decoration:none;transition:background .2s">${escapeHtml(block.content.ctaText)}</a>
@@ -786,10 +812,10 @@ export const ldSplit: BlockDef = {
     imageAlt:   'Feature image',
     imgPosition: 'left',
   }),
-  defaultSettings: (_theme) => ({
-    bg: LD.white,
+  defaultSettings: (theme) => ({
+    bg: theme.bg,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const imgLeft = block.content.imgPosition !== 'right';
     const imgUrl  = String(block.content.imageUrl || '');
     const imgBg   = imgUrl
@@ -799,9 +825,9 @@ export const ldSplit: BlockDef = {
 
     const imgCol = `<div${dropAttr} style="border-radius:${LD.radiusFrame};overflow:hidden;aspect-ratio:4/3;background:${imgBg};flex:1;min-width:0"></div>`;
     const textCol = `<div style="flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:16px">
-      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3.5vw,2.6rem);font-weight:${LD.fontBold};color:${LD.textPrimary};letter-spacing:-.04em;line-height:1.2">${renderInlineMarkdown(block.content.heading)}</h2>
-      <p${editAttr(block.id, 'body', editing)} style="font-size:1.05rem;color:${LD.textSec};line-height:1.7">${renderInlineMarkdown(block.content.body)}</p>
-      ${block.content.showCta ? ldBtn(block.content.ctaText as string, block.content.ctaHref as string, 'primary') : ''}
+      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3.5vw,2.6rem);font-weight:${LD.fontBold};color:${theme.text};letter-spacing:-.04em;line-height:1.2">${renderInlineMarkdown(block.content.heading)}</h2>
+      <p${editAttr(block.id, 'body', editing)} style="font-size:1.05rem;color:${theme.textMuted};line-height:1.7">${renderInlineMarkdown(block.content.body)}</p>
+      ${block.content.showCta ? ldBtn(block.content.ctaText as string, block.content.ctaHref as string, 'primary', theme) : ''}
     </div>`;
 
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:${LD.font}">
@@ -867,10 +893,10 @@ export const ldPricing: BlockDef = {
     t3f1: 'Unlimited everything', t3f2: '1TB storage', t3f3: 'Custom analytics', t3f4: '24/7 dedicated support',
     featuredTier: 2,
   }),
-  defaultSettings: (_theme) => ({
-    bg: LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg: theme.bgAlt,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const featured = Number(block.content.featuredTier) || 2;
     const tiers = [1, 2, 3];
     const checkIcon    = PRICING_CHECK_ICON;
@@ -879,8 +905,8 @@ export const ldPricing: BlockDef = {
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:${LD.font}">
   <div style="max-width:1100px;margin:0 auto">
     <div style="text-align:center;margin-bottom:52px">
-      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:${LD.fontBold};color:${LD.textPrimary};letter-spacing:-.03em;margin-bottom:12px">${escapeHtml(block.content.sectionTitle)}</h2>
-      <p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.05rem;color:${LD.textSec}">${escapeHtml(block.content.sectionSub)}</p>
+      <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:${LD.fontBold};color:${theme.text};letter-spacing:-.03em;margin-bottom:12px">${escapeHtml(block.content.sectionTitle)}</h2>
+      <p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.05rem;color:${theme.textMuted}">${escapeHtml(block.content.sectionSub)}</p>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;align-items:start">
       ${tiers.map(i => {
@@ -904,7 +930,7 @@ export const ldPricing: BlockDef = {
             <span style="font-size:14px;color:${muted}">${escapeHtml(block.content[`t${i}Period`] ?? '')}</span>
           </div>
           <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px">${features}</div>
-          ${ldBtn(block.content[`t${i}Cta`] as string, block.content[`t${i}Href`] as string, isFeatured ? 'secondary' : 'primary')}
+          ${ldBtn(block.content[`t${i}Cta`] as string, block.content[`t${i}Href`] as string, isFeatured ? 'secondary' : 'primary', theme)}
         </div>`;
       }).join('')}
     </div>
@@ -960,11 +986,11 @@ export const ldTestimonial: BlockDef = {
     q3Role:  'Online Customer',
     q3Stars: 5,
   }),
-  defaultSettings: (_theme) => ({
-    bg:       LD.bgAlt,
-    accentBg: LD.white,
+  defaultSettings: (theme) => ({
+    bg:       theme.bgAlt,
+    accentBg: theme.bg,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const isGrid = block.content.layout === 'grid';
     const stars  = (n: number) => Array.from({ length: 5 }, (_, i) =>
       `<svg width="14" height="14" viewBox="0 0 14 14" fill="${i < n ? LD.yellow : LD.border}">
@@ -975,12 +1001,12 @@ export const ldTestimonial: BlockDef = {
     const card = (q: string, name: string, role: string, starsN: number, idx: number) => `
       <div style="background:${String(block.settings.accentBg)};border-radius:${LD.radiusFrame};padding:${isGrid ? '28px' : '40px 36px'};box-shadow:${LD.shadow};position:relative">
         <div style="font-size:${isGrid ? '52px' : '72px'};line-height:.8;color:${LD.trueBlue};opacity:.15;font-family:Georgia,serif;position:absolute;top:${isGrid ? '16px' : '20px'};left:${isGrid ? '20px' : '28px'}">"</div>
-        <p${editAttr(block.id, `q${idx+1}`, editing)} style="font-size:${isGrid ? '1rem' : '1.3rem'};font-weight:${LD.fontMed};color:${LD.textPrimary};line-height:1.65;margin-bottom:24px;padding-top:${isGrid ? '16px' : '20px'}">${escapeHtml(q)}</p>
+        <p${editAttr(block.id, `q${idx+1}`, editing)} style="font-size:${isGrid ? '1rem' : '1.3rem'};font-weight:${LD.fontMed};color:${theme.text};line-height:1.65;margin-bottom:24px;padding-top:${isGrid ? '16px' : '20px'}">${escapeHtml(q)}</p>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:12px">
             <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,${LD.everydayBlue},${LD.blue});flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:${LD.fontBold};color:white">${escapeHtml(name).charAt(0)}</div>
             <div>
-              <p${editAttr(block.id, `q${idx+1}Name`, editing)} style="font-size:14px;font-weight:${LD.fontBold};color:${LD.textPrimary};margin:0">${escapeHtml(name)}</p>
+              <p${editAttr(block.id, `q${idx+1}Name`, editing)} style="font-size:14px;font-weight:${LD.fontBold};color:${theme.text};margin:0">${escapeHtml(name)}</p>
               <p${editAttr(block.id, `q${idx+1}Role`, editing)} style="font-size:12px;color:${LD.textTert};margin:2px 0 0">${escapeHtml(role)}</p>
             </div>
           </div>
@@ -1062,9 +1088,9 @@ export const ldFooter: BlockDef = {
     showSocial: true,
     showSpark:  true,
   }),
-  defaultSettings: (_theme) => ({
-    bg:          LD.navy,
-    accentColor: LD.yellow,
+  defaultSettings: (theme) => ({
+    bg:          theme.primary,
+    accentColor: theme.accent,
   }),
   render(block, _theme, editing) {
     const bg     = String(block.settings.bg);
@@ -1147,21 +1173,24 @@ export const ldWaterfallNav: BlockDef = {
     tab4Label: 'Technology',              tab4Href: '#',
     tab5Label: 'Corporate',               tab5Href: '#',
   }),
-  defaultSettings: (_theme) => ({
-    bg:     LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg:     theme.bgAlt,
     height: '156',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const wfId = `ld-wf-${block.id.replace(/[^a-z0-9]/gi, '')}`;
     const h    = `${String(block.settings.height)}px`;
     const arrowSvg = `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor" style="flex-shrink:0"><path d="m8.369 14.338 5.5-6a.5.5 0 0 0 0-.676l-5.5-6-.738.676L12.363 7.5H1v1h11.363l-4.732 5.162z"/></svg>`;
-    const strips = [
-      { n: 1, bg: '#e1f3f8',    color: '#001e60', z: 5, pl: '24px' },
-      { n: 2, bg: '#a9ddf7',    color: '#001e60', z: 4, pl: '56px' },
-      { n: 3, bg: LD.trueBlue,  color: LD.white,  z: 3, pl: '56px' },
-      { n: 4, bg: '#002e99',    color: LD.white,  z: 2, pl: '56px' },
-      { n: 5, bg: LD.navy,      color: LD.white,  z: 1, pl: '56px' },
-    ];
+    // Mathematically derive 5 strip colors from theme.primary (lightest → full)
+    const p = theme.primary;
+    const tints = [tintHex(p, 0.12), tintHex(p, 0.35), tintHex(p, 0.62), tintHex(p, 0.82), p];
+    const strips = tints.map((bg, i) => ({
+      n: i + 1,
+      bg,
+      color: isHexDark(bg) ? LD.white : theme.primary,
+      z: 5 - i,
+      pl: i === 0 ? '24px' : '56px',
+    }));
     const stripsHtml = strips.map((s, i) => {
       const label   = String(block.content[`tab${s.n}Label`] ?? '');
       const href    = sanitizeUrl(String(block.content[`tab${s.n}Href`] ?? '#'));
@@ -1201,6 +1230,7 @@ export const ldWaterfallNav: BlockDef = {
       </div>
       <div class="pp-group">
         <div class="pp-row"><input type="color" value="${String(block.settings.bg)}" class="pp-color" data-key="settings.bg"><span class="pp-color-label">Background</span></div>
+        <p class="pp-hint" style="font-size:11px;color:#72767c;margin-top:4px">Strip colors auto-derive from the Looks primary color.</p>
       </div>`;
   },
 };
@@ -1225,8 +1255,8 @@ export const ldHeroSearch: BlockDef = {
     line1:       'Cashiers wanted.',
     placeholder: 'Search by team, department, or keyword',
   }),
-  defaultSettings: (_theme) => ({
-    bg:       LD.trueBlue,
+  defaultSettings: (theme) => ({
+    bg:       theme.accent,
     paddingX: '17',
   }),
   render(block, _theme, editing) {
@@ -1304,11 +1334,11 @@ export const ldTrendingRoles: BlockDef = {
     job2Title: 'Software Engineer III — Machine Learning', job2Loc: 'Sunnyvale, CA', job2Pay: 'Multiple shifts • $117,000 – $234,000/yr',  job2Href: '#',
     job3Title: 'Staff, Software Engineer',              job3Loc: 'Sunnyvale, CA',    job3Pay: 'Multiple shifts • $143,000 – $286,000/yr',  job3Href: '#',
   }),
-  defaultSettings: (_theme) => ({
-    bg:       LD.white,
+  defaultSettings: (theme) => ({
+    bg:       theme.bg,
     paddingX: '8.33',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const px = `${String(block.settings.paddingX)}%`;
     const jobCard = (n: number) => {
       const href = sanitizeUrl(String(block.content[`job${n}Href`] ?? '#'));
@@ -1323,16 +1353,16 @@ export const ldTrendingRoles: BlockDef = {
         <div style="display:flex;flex-direction:column;gap:8px">
           ${walmartSparkSvg(28, LD.yellow)}
           <div>
-            <div${editAttr(block.id, `job${n}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${LD.textPrimary};line-height:1.35;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escapeHtml(String(block.content[`job${n}Title`] ?? ''))}</div>
-            <div style="font-size:1rem;color:${LD.textSec};margin-top:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escapeHtml(String(block.content[`job${n}Loc`] ?? ''))}</div>
+            <div${editAttr(block.id, `job${n}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${theme.text};line-height:1.35;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escapeHtml(String(block.content[`job${n}Title`] ?? ''))}</div>
+            <div style="font-size:1rem;color:${theme.textMuted};margin-top:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${escapeHtml(String(block.content[`job${n}Loc`] ?? ''))}</div>
           </div>
-          <div style="font-size:1rem;color:${LD.textSec};line-height:1.5">${escapeHtml(String(block.content[`job${n}Pay`] ?? ''))}</div>
+          <div style="font-size:1rem;color:${theme.textMuted};line-height:1.5">${escapeHtml(String(block.content[`job${n}Pay`] ?? ''))}</div>
         </div>
       </a>`;
     };
     return `<section style="background:${String(block.settings.bg)};padding:40px 24px;font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto;padding:0 ${px}">
-    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2rem,4vw,3rem);font-weight:300;color:${LD.textPrimary};margin-bottom:24px;letter-spacing:-.02em">${escapeHtml(String(block.content.heading ?? ''))}</h2>
+    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2rem,4vw,3rem);font-weight:300;color:${theme.text};margin-bottom:24px;letter-spacing:-.02em">${escapeHtml(String(block.content.heading ?? ''))}</h2>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px">
       ${jobCard(1)}${jobCard(2)}${jobCard(3)}
     </div>
@@ -1385,27 +1415,27 @@ export const ldBenefitsStrip: BlockDef = {
     bf4Icon: '🧘', bf4Title: 'Wellbeing programs',               bf4Desc: 'Mental health resources and assistance programs',
     bf5Icon: '📈', bf5Title: 'Career growth opportunities',      bf5Desc: 'Training, leadership programs, and clear paths forward',
   }),
-  defaultSettings: (_theme) => ({
-    bg:       LD.white,
+  defaultSettings: (theme) => ({
+    bg:       theme.bg,
     paddingX: '8.33',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const px = `${String(block.settings.paddingX)}%`;
     const item = (n: number) =>
       `<div style="display:flex;flex-direction:column;gap:12px">
         <div style="width:72px;height:72px;background:${LD.blueLight};border-radius:${LD.radiusLg};display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0">${escapeHtml(String(block.content[`bf${n}Icon`] ?? ''))}</div>
         <div style="display:flex;flex-direction:column;gap:4px">
-          <div${editAttr(block.id, `bf${n}Title`, editing)} style="font-size:14px;font-weight:700;color:${LD.textPrimary};line-height:1.43">${escapeHtml(String(block.content[`bf${n}Title`] ?? ''))}</div>
-          <div${editAttr(block.id, `bf${n}Desc`, editing)} style="font-size:14px;font-weight:400;color:${LD.textSec};line-height:1.5">${escapeHtml(String(block.content[`bf${n}Desc`] ?? ''))}</div>
+          <div${editAttr(block.id, `bf${n}Title`, editing)} style="font-size:14px;font-weight:700;color:${theme.text};line-height:1.43">${escapeHtml(String(block.content[`bf${n}Title`] ?? ''))}</div>
+          <div${editAttr(block.id, `bf${n}Desc`, editing)} style="font-size:14px;font-weight:400;color:${theme.textMuted};line-height:1.5">${escapeHtml(String(block.content[`bf${n}Desc`] ?? ''))}</div>
         </div>
       </div>`;
     return `<section style="background:${String(block.settings.bg)};padding:64px 24px;font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto;padding:0 ${px}">
-    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2rem,4vw,3rem);font-weight:300;color:${LD.textPrimary};letter-spacing:-.02em;margin-bottom:48px">${escapeHtml(String(block.content.heading ?? ''))}</h2>
+    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2rem,4vw,3rem);font-weight:300;color:${theme.text};letter-spacing:-.02em;margin-bottom:48px">${escapeHtml(String(block.content.heading ?? ''))}</h2>
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:24px;margin-bottom:40px">
       ${[1,2,3,4,5].map(n => item(n)).join('')}
     </div>
-    <a href="${sanitizeUrl(String(block.content.ctaHref ?? '#'))}" style="display:inline-flex;height:48px;padding:0 24px;align-items:center;justify-content:center;border-radius:9999px;border:2px solid ${LD.textPrimary};font-size:18px;font-weight:700;color:${LD.textPrimary};text-decoration:none;font-family:${LD.font}">${escapeHtml(String(block.content.ctaText ?? 'Learn more'))}</a>
+    <a href="${sanitizeUrl(String(block.content.ctaHref ?? '#'))}" style="display:inline-flex;height:48px;padding:0 24px;align-items:center;justify-content:center;border-radius:9999px;border:2px solid ${theme.text};font-size:18px;font-weight:700;color:${theme.text};text-decoration:none;font-family:${LD.font}">${escapeHtml(String(block.content.ctaText ?? 'Learn more'))}</a>
   </div>
 </section>`;
   },
@@ -1460,15 +1490,15 @@ export const ldCategoryCards: BlockDef = {
     card3Title: 'Healthcare',       card3Body: 'Pharmacy, optical, and clinical services',         card3Href: '#',
     card4Title: 'Corporate',        card4Body: 'Finance, HR, strategy, and operations',            card4Href: '#',
   }),
-  defaultSettings: (_theme) => ({
-    bg:   LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg:   theme.bgAlt,
     cols: '4',
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const cols = Number(block.settings.cols) || 4;
     const palette = [
-      { bg: LD.blueLight, text: LD.navy,  muted: LD.textSec,              cta: LD.blue   },
-      { bg: LD.skyBlue,   text: LD.navy,  muted: LD.textSec,              cta: LD.blue   },
+      { bg: LD.blueLight, text: LD.navy,  muted: theme.textMuted,         cta: theme.accent },
+      { bg: LD.skyBlue,   text: LD.navy,  muted: theme.textMuted,         cta: theme.accent },
       { bg: LD.blue,      text: LD.white, muted: 'rgba(255,255,255,.78)', cta: LD.white  },
       { bg: LD.navy,      text: LD.white, muted: 'rgba(255,255,255,.78)', cta: LD.yellow },
     ];
@@ -1548,15 +1578,15 @@ export const ldBentoGrid: BlockDef = {
     mini3Icon:    '🤝', mini3Title: 'Inclusion',        mini3Body: 'A diverse and welcoming place to work',
     showMiniRow:  true,
   }),
-  defaultSettings: (_theme) => ({
-    bg: LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg: theme.bgAlt,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const mini = (icon: string, title: string, body: string, tf: string, bf: string) =>
       `<div style="background:${LD.white};border-radius:${LD.radiusFrame};padding:28px;box-shadow:${LD.shadowTile}">
         <div style="font-size:28px;margin-bottom:12px">${escapeHtml(icon)}</div>
         <h4${editAttr(block.id, tf, editing)} style="font-size:1rem;font-weight:700;color:${LD.navy};margin-bottom:6px">${escapeHtml(title)}</h4>
-        <p${editAttr(block.id, bf, editing)} style="font-size:13px;color:${LD.textSec};line-height:1.55">${escapeHtml(body)}</p>
+        <p${editAttr(block.id, bf, editing)} style="font-size:13px;color:${theme.textMuted};line-height:1.55">${escapeHtml(body)}</p>
       </div>`;
 
     const miniRow = block.content.showMiniRow
@@ -1573,12 +1603,12 @@ export const ldBentoGrid: BlockDef = {
       <div style="background:${LD.navy};border-radius:${LD.radiusFrame};padding:48px 40px;display:flex;flex-direction:column;justify-content:center;box-shadow:${LD.shadowLg}">
         <h2${editAttr(block.id, 'featHeading', editing)} style="font-size:clamp(1.6rem,2.8vw,2.4rem);font-weight:700;color:${LD.white};letter-spacing:-.04em;line-height:1.2;margin-bottom:16px">${escapeHtml(String(block.content.featHeading ?? ''))}</h2>
         <p${editAttr(block.id, 'featBody', editing)} style="font-size:1rem;color:rgba(255,255,255,.75);line-height:1.65;margin-bottom:32px">${escapeHtml(String(block.content.featBody ?? ''))}</p>
-        ${ldBtn(String(block.content.featCtaText ?? 'Learn More'), String(block.content.featCtaHref ?? '#'), 'primary')}
+        ${ldBtn(String(block.content.featCtaText ?? 'Learn More'), String(block.content.featCtaHref ?? '#'), 'primary', theme)}
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div style="background:${LD.skyBlue};border-radius:${LD.radiusFrame};padding:32px;flex:1;box-shadow:${LD.shadowTile}">
           <h3${editAttr(block.id, 'card2Heading', editing)} style="font-size:1.2rem;font-weight:700;color:${LD.navy};letter-spacing:-.025em;margin-bottom:10px">${escapeHtml(String(block.content.card2Heading ?? ''))}</h3>
-          <p${editAttr(block.id, 'card2Body', editing)} style="font-size:14px;color:${LD.textSec};line-height:1.6">${escapeHtml(String(block.content.card2Body ?? ''))}</p>
+          <p${editAttr(block.id, 'card2Body', editing)} style="font-size:14px;color:${theme.textMuted};line-height:1.6">${escapeHtml(String(block.content.card2Body ?? ''))}</p>
         </div>
         <div style="background:${LD.blue};border-radius:${LD.radiusFrame};padding:32px;flex:1;box-shadow:${LD.shadowTile}">
           <h3${editAttr(block.id, 'card3Heading', editing)} style="font-size:1.2rem;font-weight:700;color:${LD.white};letter-spacing:-.025em;margin-bottom:10px">${escapeHtml(String(block.content.card3Heading ?? ''))}</h3>
@@ -1644,10 +1674,10 @@ export const ldMilestones: BlockDef = {
     stat2: '75%',    desc2: 'of salaried managers started their career as hourly associates',  tag2: 'Career Advancement',
     stat3: '300K+',  desc3: 'associates have earned a 10+ year service recognition badge',    tag3: 'Loyal Team',
   }),
-  defaultSettings: (_theme) => ({
-    bg: LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg: theme.bgAlt,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const card = (stat: string, desc: string, tag: string, sf: string, df: string) =>
       `<div style="background:${LD.white};border-radius:${LD.radiusFrame};padding:36px 32px;box-shadow:${LD.shadowTile};position:relative;overflow:hidden">
         <div style="position:absolute;bottom:-28px;right:-28px;opacity:.05">${walmartSparkSvg(130, LD.navy)}</div>
@@ -1655,7 +1685,7 @@ export const ldMilestones: BlockDef = {
           ${walmartSparkSvg(12, LD.navy)}&nbsp;${escapeHtml(tag)}
         </div>
         <div${editAttr(block.id, sf, editing)} style="font-size:clamp(2.2rem,4vw,3rem);font-weight:700;color:${LD.trueBlue};letter-spacing:-.04em;line-height:1;margin-bottom:14px">${escapeHtml(stat)}</div>
-        <p${editAttr(block.id, df, editing)} style="font-size:14px;color:${LD.textSec};line-height:1.65">${escapeHtml(desc)}</p>
+        <p${editAttr(block.id, df, editing)} style="font-size:14px;color:${theme.textMuted};line-height:1.65">${escapeHtml(desc)}</p>
       </div>`;
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:${LD.font}">
   <div style="max-width:1200px;margin:0 auto">
@@ -1713,10 +1743,10 @@ export const ldJobCards: BlockDef = {
     job2Title: 'Pharmacy Manager',       job2Dept: 'Healthcare',    job2Loc: 'Multiple Locations',    job2Desc: 'Lead a clinical team and improve community health outcomes every day.',            job2Href: '#',
     job3Title: 'Store Coach',            job3Dept: 'Stores & Clubs', job3Loc: 'Nationwide',           job3Desc: 'Develop your store team and deliver exceptional experiences for every customer.', job3Href: '#',
   }),
-  defaultSettings: (_theme) => ({
-    bg: LD.bgAlt,
+  defaultSettings: (theme) => ({
+    bg: theme.bgAlt,
   }),
-  render(block, _theme, editing) {
+  render(block, theme, editing) {
     const deptColors: Record<string, string> = {
       'Technology': LD.blueMid, 'Healthcare': '#d1fae5', 'Stores & Clubs': LD.skyBlue,
       'Corporate': LD.blueLight, 'Supply Chain': '#fef3c7', "Sam's Club": '#ede9fe',
@@ -1729,9 +1759,9 @@ export const ldJobCards: BlockDef = {
       const href    = sanitizeUrl(String(block.content[`job${n}Href`] ?? '#'));
       return `<div style="background:${LD.white};border-radius:${LD.radiusFrame};padding:28px;display:flex;flex-direction:column;box-shadow:${LD.shadowTile}">
         <span style="display:inline-flex;align-items:center;background:${deptBg};border-radius:${LD.radius};padding:4px 12px;font-size:11px;font-weight:700;color:${LD.navy};margin-bottom:14px;width:fit-content;letter-spacing:.3px">${escapeHtml(dept)}</span>
-        <h3${editAttr(block.id, `job${n}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${LD.textPrimary};letter-spacing:-.02em;margin-bottom:8px;line-height:1.3">${escapeHtml(String(block.content[`job${n}Title`] ?? ''))}</h3>
+        <h3${editAttr(block.id, `job${n}Title`, editing)} style="font-size:1.1rem;font-weight:700;color:${theme.text};letter-spacing:-.02em;margin-bottom:8px;line-height:1.3">${escapeHtml(String(block.content[`job${n}Title`] ?? ''))}</h3>
         <div style="display:flex;align-items:center;margin-bottom:12px">${pinSvg}<span style="font-size:12px;color:${LD.textTert}">${escapeHtml(String(block.content[`job${n}Loc`] ?? ''))}</span></div>
-        <p${editAttr(block.id, `job${n}Desc`, editing)} style="font-size:13px;color:${LD.textSec};line-height:1.6;margin-bottom:20px;flex:1">${escapeHtml(String(block.content[`job${n}Desc`] ?? ''))}</p>
+        <p${editAttr(block.id, `job${n}Desc`, editing)} style="font-size:13px;color:${theme.textMuted};line-height:1.6;margin-bottom:20px;flex:1">${escapeHtml(String(block.content[`job${n}Desc`] ?? ''))}</p>
         <a href="${href}" style="display:inline-flex;align-items:center;padding:9px 20px;border-radius:${LD.radius};border:2px solid ${LD.blue};font-size:13px;font-weight:700;color:${LD.blue};text-decoration:none;width:fit-content">View Role${arrowSvg}</a>
       </div>`;
     };

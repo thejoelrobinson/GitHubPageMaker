@@ -8,17 +8,20 @@
 import { state, visual } from '../state';
 import { uploadFile } from '../github';
 import { notify } from '../ui/notifications';
-import { titleToPath } from '../utils';
+import { titleToPath, escapeHtml, shortNavLabel } from '../utils';
 import { pdfExtract, pptxExtract, docxExtract } from './doc-extract';
 import type { ExtractedTable, ExtractedSlide } from './doc-extract';
 import type { ImageAsset, AssembledBlock, BlockPrefill } from './content-extract';
 import { registerLocalAsset } from './local-asset-registry';
 import { cacheFileInSW, isPreviewSWReady } from '../preview-sw-client';
 import { analyzeContent, assembleBlocks } from './content-extract';
+import { validateHeadings } from './llm-validator';
+import { validateHeadingsInBrowser, isBrowserLLMReady, DEFAULT_BROWSER_MODEL } from './browser-llm';
 import { assembleBlocksFromSlides } from './slide-blocks';
 import { addEmptyPage, switchPage } from './pages';
 import { addBlockAfter, renderCanvas } from './canvas';
 import { renderSectionList, renderPageList } from './pages';
+import { openSettings } from '../modal';
 import type { NavLink } from '../types';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -27,11 +30,37 @@ let _stagedFiles: File[] = [];
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export function openAssetWizard(): void {
+export function updateAiChip(): void {
+  const label = document.getElementById('wizard-ai-chip-label');
+  const icon  = document.getElementById('wizard-ai-chip-icon');
+  if (!label || !icon) return;
+  if (state.browserLLMEnabled && isBrowserLLMReady()) {
+    const modelShort = (state.browserLLMModel || DEFAULT_BROWSER_MODEL).split('/').pop() ?? 'AI';
+    label.textContent = `AI on — ${modelShort}`;
+    icon.style.color = 'var(--accent)';
+  } else if (state.browserLLMEnabled) {
+    label.textContent = 'AI downloading…';
+    icon.style.color = 'var(--text-dim)';
+  } else if (state.ollamaEnabled) {
+    label.textContent = `AI on — Ollama`;
+    icon.style.color = 'var(--accent)';
+  } else {
+    label.textContent = 'AI off';
+    icon.style.color = '';
+  }
+}
+
+export function openAssetWizard(targetPageId?: string): void {
   _stagedFiles = [];
+  updateAiChip();
   showStep('upload');
   renderFileList();
   populateTargetPageSelect();
+  // Pre-select a specific page when opened from a per-page redesign context
+  if (targetPageId) {
+    const sel = document.getElementById('wizard-target-page') as HTMLSelectElement | null;
+    if (sel) sel.value = targetPageId;
+  }
   document.getElementById('asset-wizard-modal')?.classList.remove('hidden');
 }
 
@@ -40,7 +69,7 @@ function populateTargetPageSelect(): void {
   if (!sel) return;
   sel.innerHTML = '<option value="">— Create new page —</option>' +
     visual.pages.map(p =>
-      `<option value="${escHtml(p.id)}">${escHtml(p.title)}${p.isHome ? ' (Home)' : ''}</option>`,
+      `<option value="${escapeHtml(p.id)}">${escapeHtml(p.title)}${p.isHome ? ' (Home)' : ''}</option>`,
     ).join('');
 }
 
@@ -132,7 +161,7 @@ function renderFileList(): void {
   list.innerHTML = _stagedFiles.map((f, i) => `
     <div class="wfl-item" data-idx="${i}">
       <span class="wfl-icon">${fileIcon(f)}</span>
-      <span class="wfl-name">${escHtml(f.name)}</span>
+      <span class="wfl-name">${escapeHtml(f.name)}</span>
       <span class="wfl-size">${formatBytes(f.size)}</span>
       <button class="wfl-remove pp-icon-btn" data-idx="${i}" title="Remove">
         <svg viewBox="0 0 16 16" fill="currentColor" width="10"><path d="M3.72 3.72a.75.75 0 0 1 1.06 0L8 6.94l3.22-3.22a.749.749 0 0 1 1.275.326.749.749 0 0 1-.215.734L9.06 8l3.22 3.22a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215L8 9.06l-3.22 3.22a.751.751 0 0 1-1.042-.018.751.751 0 0 1-.018-1.042L6.94 8 3.72 4.78a.75.75 0 0 1 0-1.06Z"/></svg>
@@ -157,13 +186,9 @@ function updateBuildBtn(): void {
 
 // ── Progress steps ────────────────────────────────────────────────────────────
 
-const STEPS = [
-  'Reading files',
-  'Extracting document content',
-  'Analysing structure',
-  'Uploading assets',
-  'Building page',
-];
+// STEPS is rebuilt at the start of each runGeneration so the AI step only
+// appears (and only gets a ✓) when Ollama is actually enabled.
+let STEPS: string[] = [];
 
 // ── Current-file indicator ────────────────────────────────────────────────────
 
@@ -178,8 +203,8 @@ function setCurrentFile(file: File | null, msg = ''): void {
   }
   el.style.display = 'flex';
   el.innerHTML = `<span class="wcf-icon">${fileIcon(file)}</span>
-    <span class="wcf-name">${escHtml(file.name)}</span>
-    ${msg ? `<span class="wcf-msg">${escHtml(msg)}</span>` : ''}
+    <span class="wcf-name">${escapeHtml(file.name)}</span>
+    ${msg ? `<span class="wcf-msg">${escapeHtml(msg)}</span>` : ''}
     <span class="wfu-badge wfu-badge--uploading"><span class="wfu-spinner"></span></span>`;
 }
 
@@ -193,7 +218,7 @@ function renderFileUploads(imgs: ImageAsset[]): void {
   el.innerHTML = `<div class="wfu-list">${
     imgs.map((img, i) =>
       `<div class="wfu-item" id="wfu-item-${i}">
-        <span class="wfu-name">${escHtml(img.filename)}</span>
+        <span class="wfu-name">${escapeHtml(img.filename)}</span>
         <span class="wfu-badge wfu-badge--pending">—</span>
       </div>`,
     ).join('')
@@ -234,7 +259,7 @@ function renderProgressSteps(active: number, error?: string): void {
     else if (i === active) { cls += ' wp-step--active'; icon = error ? '✗' : ''; }
     return `<div class="${cls}" data-idx="${i}">
       <span class="wp-icon">${icon}</span>
-      <span class="wp-label">${escHtml(label)}${i === active && error ? ` — ${escHtml(error)}` : ''}</span>
+      <span class="wp-label">${escapeHtml(label)}${i === active && error ? ` — ${escapeHtml(error)}` : ''}</span>
     </div>`;
   }).join('');
 }
@@ -242,7 +267,7 @@ function renderProgressSteps(active: number, error?: string): void {
 // ── Multi-page grouping ──────────────────────────────────────────────────────
 
 /** Minimum content blocks (excluding nav/footer/hero) before we split into pages. */
-const MULTI_PAGE_THRESHOLD = 8;
+const MULTI_PAGE_THRESHOLD = 12;
 
 interface PageGroup {
   path: string;
@@ -251,13 +276,18 @@ interface PageGroup {
   blocks: AssembledBlock[];
 }
 
-/** Keyword sets for classifying blocks into pages (case-insensitive title match). */
+/** Maximum number of pages the flexible grouper will produce (excluding home). */
+const MAX_SUBPAGES = 5;
+
+/** Keyword sets for classifying blocks into pages (case-insensitive title match).
+ *  Used as a fallback when blocks have no sectionTitle. */
 const ABOUT_KEYWORDS = /\b(about|story|history|mission|vision|background|team|people|who we are|our story)\b/i;
 const SERVICES_KEYWORDS = /\b(services|products|offerings|solutions|what we do|features|capabilities)\b/i;
 const CONTACT_KEYWORDS = /\b(contact|reach|location|get in touch|connect)\b/i;
 
 /**
  * Classify a block into a page category based on its sectionTitle and block type.
+ * Used as a fallback when no sectionTitle-driven grouping is available.
  * Returns 'home' | 'about' | 'services' | 'contact'.
  */
 function classifyBlockPage(block: AssembledBlock): string {
@@ -287,6 +317,14 @@ function classifyBlockPage(block: AssembledBlock): string {
  * Group assembled blocks into multiple pages when the document is large.
  * If total content blocks (non-structural) are <= MULTI_PAGE_THRESHOLD,
  * returns null to signal single-page behavior.
+ *
+ * Strategy (in priority order):
+ * 1. Flexible section-title driven grouping — each unique sectionTitle
+ *    (on non-structural, non-hero blocks) becomes its own page. Consecutive
+ *    blocks sharing the same title (or with no title) are grouped together.
+ *    Capped at MAX_SUBPAGES sub-pages to avoid explosion.
+ * 2. Keyword-based fallback — used when all blocks have empty sectionTitles
+ *    (e.g. plain-text documents with no structural headings).
  */
 function groupBlocksIntoPages(
   allBlocks: AssembledBlock[],
@@ -303,7 +341,83 @@ function groupBlocksIntoPages(
   const navBlock = allBlocks.find(b => b.type === 'nav');
   const footerBlock = allBlocks.find(b => b.type === 'footer');
 
-  // Classify each content block
+  // ── Strategy 1: Flexible section-title driven grouping ───────────────
+  // Candidate blocks: non-structural, non-hero blocks that carry a sectionTitle
+  const titledBlocks = countableBlocks.filter(
+    b => b.sectionTitle && b.sectionTitle.trim() !== '',
+  );
+  const uniqueTitles = [...new Set(titledBlocks.map(b => b.sectionTitle!.trim()))];
+
+  if (uniqueTitles.length >= 2) {
+    // Determine which blocks belong to "home" — hero + any untitled blocks
+    // appearing before the first titled section
+    const firstTitledIdx = countableBlocks.findIndex(
+      b => b.sectionTitle && b.sectionTitle.trim() !== '',
+    );
+    const preHomeBocks = firstTitledIdx > 0
+      ? countableBlocks.slice(0, firstTitledIdx)
+      : [];
+
+    // Hero block always goes on home (it's not in countableBlocks)
+    const heroBlock = contentBlocks.find(b => b.type === 'hero');
+
+    // Build subpage groups by grouping consecutive blocks with the same title
+    // Cap at MAX_SUBPAGES to avoid explosion
+    const subpageTitles = uniqueTitles.slice(0, MAX_SUBPAGES);
+    const subpageMap = new Map<string, AssembledBlock[]>();
+    for (const title of subpageTitles) subpageMap.set(title, []);
+    // Overflow bucket — titled sections beyond the cap fold into the last subpage
+    const lastTitle = subpageTitles[subpageTitles.length - 1];
+
+    for (const block of countableBlocks) {
+      const t = (block.sectionTitle ?? '').trim();
+      if (!t) {
+        // Untitled blocks after the first titled section fold into home
+        continue;
+      }
+      if (subpageMap.has(t)) {
+        subpageMap.get(t)!.push(block);
+      } else {
+        // Beyond the cap: fold into the last captured subpage
+        subpageMap.get(lastTitle)!.push(block);
+      }
+    }
+
+    const pages: PageGroup[] = [];
+
+    // Home page
+    const homeBlocks: AssembledBlock[] = [];
+    if (navBlock) homeBlocks.push(navBlock);
+    if (heroBlock) homeBlocks.push(heroBlock);
+    homeBlocks.push(...preHomeBocks);
+    if (footerBlock) homeBlocks.push(footerBlock);
+    pages.push({ path: 'index.html', title: pageTitle, isHome: true, blocks: homeBlocks });
+
+    // Subpages — one per distinct sectionTitle
+    for (const [title, sectionBlocks] of subpageMap) {
+      if (sectionBlocks.length === 0) continue;
+      const subpagePath = titleToPath(title, false);
+      const subpageBlocks: AssembledBlock[] = [];
+      if (navBlock) subpageBlocks.push({ ...navBlock, prefill: buildSubpageNav(navBlock, pageTitle) });
+      subpageBlocks.push(...sectionBlocks);
+      if (footerBlock) subpageBlocks.push(footerBlock);
+      pages.push({ path: subpagePath, title, isHome: false, blocks: subpageBlocks });
+    }
+
+    // Update nav links on every page to reflect all generated pages
+    const navLinks: NavLink[] = pages.map(p => ({
+      text: p.isHome ? 'Home' : shortNavLabel(p.title),
+      href: p.isHome ? '/' : `./${p.path}`,
+    }));
+    for (const pg of pages) {
+      const nav = pg.blocks.find(b => b.type === 'nav');
+      if (nav) nav.prefill['content.links'] = navLinks;
+    }
+
+    return pages;
+  }
+
+  // ── Strategy 2: Keyword-based fallback (no sectionTitles present) ────
   const buckets: Record<string, AssembledBlock[]> = {
     home: [],
     about: [],
@@ -385,10 +499,10 @@ function groupBlocksIntoPages(
     });
   }
 
-  // Update the home nav links to include all generated pages
+  // Update the nav links to include all generated pages
   const navLinks: NavLink[] = pages.map(p => ({
-    text: p.isHome ? 'Home' : p.title,
-    href: p.isHome ? '/' : p.path,
+    text: p.isHome ? 'Home' : shortNavLabel(p.title),
+    href: p.isHome ? '/' : `./${p.path}`,
   }));
   for (const pg of pages) {
     const nav = pg.blocks.find(b => b.type === 'nav');
@@ -409,7 +523,24 @@ export async function runGeneration(): Promise<void> {
   if (_stagedFiles.length === 0) return;
 
   showStep('processing');
+
+  const hasAI = (state.browserLLMEnabled && isBrowserLLMReady()) ||
+                (state.ollamaEnabled && !!state.ollamaEndpoint);
+  STEPS = [
+    'Reading files',
+    'Extracting document content',
+    'Analysing structure',
+    ...(hasAI ? ['Enhancing with AI'] : []),
+    'Uploading assets',
+    'Building page',
+  ];
+  // Step indices shift when the AI step is present
+  const S_UPLOAD = hasAI ? 4 : 3;
+  const S_BUILD  = hasAI ? 5 : 4;
+  const S_DONE   = hasAI ? 6 : 5;
+
   let activeStep = 0;
+  let aiEnhanced = false;
   renderProgressSteps(activeStep);
 
   const images: ImageAsset[] = [];
@@ -513,19 +644,40 @@ export async function runGeneration(): Promise<void> {
       pageTitle = result.pageTitle;
     } else {
       // Generic text-based analysis path (PDF, DOCX, TXT, etc.)
-      const contentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
+      let contentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
       pageTitle = contentMap.pageTitle;
+
+      if (hasAI) {
+        activeStep = 3;
+        renderProgressSteps(activeStep);
+        try {
+          if (state.browserLLMEnabled && isBrowserLLMReady()) {
+            // Prefer in-browser model (no external service required)
+            contentMap = await validateHeadingsInBrowser(contentMap);
+            aiEnhanced = true;
+          } else if (state.ollamaEnabled && state.ollamaEndpoint) {
+            // Fall back to Ollama
+            contentMap = await validateHeadings(contentMap, {
+              endpoint: state.ollamaEndpoint,
+              model:    state.ollamaModel || 'llama3.2:3b',
+            });
+            aiEnhanced = true;
+          }
+        } catch { /* non-fatal — proceed with original contentMap */ }
+      }
+
       blocks = assembleBlocks(contentMap, visual.theme);
     }
-    activeStep = 3;
+    activeStep = S_UPLOAD;
     renderProgressSteps(activeStep);
   } catch (e) {
     renderProgressSteps(2, (e as Error).message);
     showRetryButton(); return;
   }
 
-  // Step 3: Uploading assets to GitHub
+  // Step 3: Uploading assets to GitHub (or staging locally when not connected)
   const uploadedPaths: string[] = [];
+  let stagedCount = 0;
   try {
     if (state.connected) {
       renderFileUploads(images);
@@ -562,15 +714,28 @@ export async function runGeneration(): Promise<void> {
           // non-fatal: page still builds, image just won't be on GitHub yet
         }
       }
+    } else {
+      // Not connected — stage assets locally for upload on next Publish
+      for (const img of images) {
+        const safeName = img.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `assets/${safeName}`;
+        registerLocalAsset(path, img.mediaType, img.base64);
+        if (isPreviewSWReady()) cacheFileInSW(path, atob(img.base64));
+        // Deduplicate by path before pushing
+        if (!visual.pendingUploads.some(u => u.path === path)) {
+          visual.pendingUploads.push({ path, base64: img.base64, mediaType: img.mediaType });
+        }
+        stagedCount++;
+      }
     }
-    activeStep = 4;
+    activeStep = S_BUILD;
     renderProgressSteps(activeStep);
   } catch (e) {
-    renderProgressSteps(3, (e as Error).message);
+    renderProgressSteps(S_UPLOAD, (e as Error).message);
     showRetryButton(); return;
   }
 
-  // Step 4: Building page(s)
+  // Step 5: Building page(s)
   try {
     const targetSel = document.getElementById('wizard-target-page') as HTMLSelectElement | null;
     const targetId = targetSel?.value ?? '';
@@ -610,7 +775,7 @@ export async function runGeneration(): Promise<void> {
       renderSectionList();
       renderPageList();
 
-      activeStep = 5;
+      activeStep = S_DONE;
       renderProgressSteps(activeStep);
 
       // Show done step
@@ -619,9 +784,16 @@ export async function runGeneration(): Promise<void> {
       if (doneTitle) doneTitle.textContent = `${pageGroups.length} pages created!`;
       if (doneSummary) doneSummary.textContent =
         `${totalBlocks} sections across ${pageGroups.length} pages` +
-        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}.`;
+        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}` +
+        `${stagedCount ? `, ${stagedCount} assets staged for upload` : ''}.`;
 
       showStep('done');
+      if (aiEnhanced) {
+        const badge = document.createElement('p');
+        badge.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:8px';
+        badge.textContent = '✦ Headings validated by Ollama';
+        document.getElementById('wizard-step-done')?.appendChild(badge);
+      }
     } else {
       // ── Single-page generation (original behavior) ─────────────────────
       let page = targetId
@@ -660,7 +832,7 @@ export async function runGeneration(): Promise<void> {
       renderSectionList();
       renderPageList();
 
-      activeStep = 5;
+      activeStep = S_DONE;
       renderProgressSteps(activeStep);
 
       // Show done step
@@ -668,12 +840,20 @@ export async function runGeneration(): Promise<void> {
       const doneSummary = document.getElementById('wizard-done-summary');
       if (doneTitle)   doneTitle.textContent = `"${pageTitle}" is ready!`;
       if (doneSummary) doneSummary.textContent =
-        `${blocks.length} sections created${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}.`;
+        `${blocks.length} sections created` +
+        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}` +
+        `${stagedCount ? `, ${stagedCount} assets staged for upload` : ''}.`;
 
       showStep('done');
+      if (aiEnhanced) {
+        const badge = document.createElement('p');
+        badge.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:8px';
+        badge.textContent = '✦ Headings validated by Ollama';
+        document.getElementById('wizard-step-done')?.appendChild(badge);
+      }
     }
   } catch (e) {
-    renderProgressSteps(4, (e as Error).message);
+    renderProgressSteps(S_BUILD, (e as Error).message);
     showRetryButton(); return;
   }
 }
@@ -722,10 +902,6 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 // ── Init (called once from index.ts or main.ts) ───────────────────────────────
 
 export function initAssetWizard(): void {
@@ -761,6 +937,12 @@ export function initAssetWizard(): void {
       if (e.dataTransfer?.files) stageFiles(e.dataTransfer.files);
     });
   }
+
+  // AI chip — Configure button opens Settings → AI tab
+  document.getElementById('wizard-ai-chip-btn')?.addEventListener('click', () => {
+    document.getElementById('asset-wizard-modal')?.classList.add('hidden');
+    openSettings('ai');
+  });
 
   // Browse buttons
   document.getElementById('wizard-btn-browse-files')?.addEventListener('click', () => fileInput?.click());

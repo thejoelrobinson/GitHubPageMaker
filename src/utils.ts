@@ -46,6 +46,29 @@ export function pageUid(): string {
   return 'p' + buf[0].toString(36) + buf[1].toString(36);
 }
 
+/** Shorten a heading to a concise nav label (≤ 28 chars, first 1–4 words). */
+/** Strip markdown syntax (# headings, **bold**, *italic*, dangling *) from a string. */
+export function stripMd(s: string): string {
+  return s
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
+    .replace(/\*+/g, '')
+    .trim();
+}
+
+export function shortNavLabel(text: string): string {
+  const plain = text.trim();
+  if (plain.length <= 28) return plain;
+  const words = plain.split(/\s+/);
+  let out = '';
+  for (const w of words.slice(0, 4)) {
+    const candidate = out ? `${out} ${w}` : w;
+    if (candidate.length > 28) break;
+    out = candidate;
+  }
+  return out || plain.slice(0, 28);
+}
+
 /** Slugify a page title into a filename-safe path */
 export function titleToPath(title: string, isHome: boolean): string {
   if (isHome) return 'index.html';

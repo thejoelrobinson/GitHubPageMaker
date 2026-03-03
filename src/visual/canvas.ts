@@ -25,28 +25,18 @@ export const getInteractMode = (): boolean => interactModeActive;
 
 export function setInspectMode(active: boolean): void {
   inspectModeActive = active;
-  // Don't send inspect toggle while Interact mode owns the iframe
-  if (!interactModeActive) {
-    getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active }, '*');
-  }
-  document.getElementById('tool-inspect')?.classList.toggle('active', active && !interactModeActive);
-  if (!interactModeActive) document.getElementById('tool-edit')?.classList.remove('active');
+  // Always send — the iframe script guards against inspect overlays in interact mode internally
+  getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active }, '*');
 }
 
 export function setInteractMode(active: boolean): void {
   interactModeActive = active;
   getIframe()?.contentWindow?.postMessage({ type: 'wb:setInteractMode', active }, '*');
-  // Also set directly on the iframe body — postMessage is async and can be lost
-  // on page transitions. Direct DOM is instant and reliable (same-origin).
   getIframe()?.contentDocument?.body?.classList.toggle('wb-interact', active);
-  if (active) {
-    document.getElementById('tool-edit')?.classList.add('active');    // Preview button lights up
-    document.getElementById('tool-inspect')?.classList.remove('active');
-  } else {
-    // Leaving Preview — restore Edit mode state
+  // Preview button shows active when in preview mode
+  document.getElementById('tool-edit')?.classList.toggle('active', active);
+  if (!active) {
     getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: inspectModeActive }, '*');
-    document.getElementById('tool-edit')?.classList.remove('active');
-    document.getElementById('tool-inspect')?.classList.toggle('active', inspectModeActive);
   }
 }
 import { renderBlock, BLOCK_DEFS } from './blocks';
@@ -70,8 +60,7 @@ function stripEditingArtifacts(html: string): string {
   }
   return result;
 }
-import { renderProperties } from './properties';
-import { renderSectionList } from './pages';
+import { coordinator } from './visual-coordinator';
 import { isPreviewSWReady, cacheFileInSW } from '../preview-sw-client';
 import { debounceAutoSave } from '../draft';
 
@@ -121,12 +110,9 @@ export function renderCanvas(afterLoad?: () => void): void {
   updateUndoBtnStates();
 
   if (!page) {
-    // No page — show a placeholder. Set onload=null BEFORE srcdoc.
     iframe.onload = null;
     iframe.removeAttribute('src');
-    iframe.srcdoc = !state.connected
-      ? buildNotConnectedPlaceholder()
-      : `<!DOCTYPE html><html><body style="background:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#94a3b8"><p>No page selected</p></body></html>`;
+    iframe.srcdoc = !state.connected ? buildNotConnectedPlaceholder() : buildNoPagePlaceholder();
     return;
   }
 
@@ -316,17 +302,29 @@ function renderBlockPage(iframe: HTMLIFrameElement, page: Page, afterLoad?: () =
     // Safety-net: activate [data-field] elements directly from the parent (same-origin
     // DOM access). This guarantees contentEditable is set even if the embedded
     // activateFields() in the iframe script has a timing or compatibility issue.
-    if (!interactModeActive) {
-      const iDoc = iframe.contentDocument;
-      iDoc?.querySelectorAll<HTMLElement>('[data-field]').forEach(f => {
+    const iDoc = iframe.contentDocument;
+    if (!interactModeActive && iDoc) {
+      // Safety-net: ensure contentEditable is set (the iframe's activateFields may fire
+      // first, but this guarantees the state is correct even on timing edge-cases).
+      // Rendered HTML (bold/italic) is intentionally kept as-is so users see formatted text.
+      iDoc.querySelectorAll<HTMLElement>('[data-field]').forEach(f => {
         if (f.contentEditable !== 'true') {
-          let h = f.innerHTML;
-          h = h.replace(/<strong>([\s\S]*?)<\/strong>/gi, '**$1**');
-          h = h.replace(/<em>([\s\S]*?)<\/em>/gi, '*$1*');
-          f.innerHTML = h;
           f.contentEditable = 'true';
           if (!f.hasAttribute('tabindex')) f.setAttribute('tabindex', '0');
         }
+      });
+
+      // Direct parent-side click handler for block selection.
+      // Belt-and-suspenders over the postMessage path: the same-origin
+      // contentDocument listener fires synchronously, guaranteeing the
+      // correct block is selected the instant the user clicks regardless
+      // of any postMessage timing or interactModeActive race conditions.
+      iDoc.addEventListener('mousedown', (e: MouseEvent) => {
+        if (interactModeActive) return;
+        const target = e.target as Element | null;
+        if (target?.closest('.wb-controls, .wb-add')) return;
+        const block = target?.closest('[data-block-id]');
+        if (block) selectBlock(block.getAttribute('data-block-id')!);
       });
     }
   };
@@ -397,10 +395,48 @@ export function revertToBlocks(): void {
 // so the site scrolls inside the frame like a real browser window.
 // DO NOT add iframe.style.height back — it breaks scrolling.
 
-const LOADING_HTML = `<!DOCTYPE html><html><body style="background:#0f172a;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#64748b;gap:12px;flex-direction:column"><div style="width:24px;height:24px;border:2px solid rgba(255,255,255,.1);border-top-color:#6366f1;border-radius:50%;animation:spin .8s linear infinite"></div><span style="font-size:13px">Loading…</span><style>@keyframes spin{to{transform:rotate(360deg)}}</style></body></html>`;
+const LOADING_HTML = `<!DOCTYPE html><html><body style="background:#141416;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#606070;gap:12px;flex-direction:column"><div style="width:24px;height:24px;border:2px solid rgba(255,255,255,.08);border-top-color:#0078d4;border-radius:50%;animation:spin .8s linear infinite"></div><span style="font-size:13px">Loading…</span><style>@keyframes spin{to{transform:rotate(360deg)}}</style></body></html>`;
 
 function buildNotConnectedPlaceholder(): string {
   return `<!DOCTYPE html><html><body style="background:#0f172a;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#64748b;gap:16px;text-align:center;padding:40px"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/></svg><p style="font-size:15px;font-weight:500;color:#475569">Connect a repository to start designing</p></body></html>`;
+}
+
+function buildNoPagePlaceholder(): string {
+  return `<!DOCTYPE html><html><head><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:system-ui,-apple-system,sans-serif;color:#94a3b8}
+h2{font-size:18px;font-weight:600;color:#e2e8f0;margin-bottom:6px}
+p{font-size:13px;color:#64748b;margin-bottom:32px}
+.cards{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;max-width:560px}
+.card{position:relative;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:22px 18px 18px;width:160px;cursor:pointer;text-align:center;transition:border-color .15s,background .15s;display:flex;flex-direction:column;align-items:center;gap:10px}
+.card:hover{background:#263548;border-color:#0078d4}
+.card svg{color:#94a3b8;transition:color .15s}
+.card:hover svg{color:#0078d4}
+.card .name{font-size:13px;font-weight:600;color:#e2e8f0}
+.card .desc{font-size:11px;color:#64748b;line-height:1.4}
+.badge{position:absolute;top:-8px;right:10px;background:#0078d4;color:#fff;font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 6px;border-radius:4px}
+</style></head><body>
+<h2>No pages yet</h2>
+<p>Add your first page to start building</p>
+<div class="cards">
+  <button class="card" onclick="window.parent._showAddPageForm()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+    <div class="name">Blank page</div>
+    <div class="desc">Start empty, add blocks manually</div>
+  </button>
+  <button class="card" onclick="window.parent._showTemplateGallery()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"/></svg>
+    <div class="name">From template</div>
+    <div class="desc">Pick a pre-built design</div>
+  </button>
+  <button class="card" onclick="window.parent._openAssetWizard()">
+    <div class="badge">AUTO</div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3 3m0 0 3-3m-3 3V2.25"/></svg>
+    <div class="name">From assets</div>
+    <div class="desc">Upload files, auto-build page</div>
+  </button>
+</div>
+</body></html>`;
 }
 
 // ── Block re-render (settings panel changes) ───────────────────────────
@@ -460,7 +496,7 @@ export function applyThemeToCanvas(): void {
 export function selectBlock(id: string): void {
   visual.selectedBlockId = id;
   getIframe()?.contentWindow?.postMessage({ type: 'wb:select', id }, '*');
-  renderProperties();
+  coordinator.renderProperties?.();
   document.querySelectorAll('.sl-item').forEach(el => {
     (el as HTMLElement).classList.toggle('active', (el as HTMLElement).dataset.blockId === id);
   });
@@ -469,7 +505,7 @@ export function selectBlock(id: string): void {
 export function deselectBlock(): void {
   visual.selectedBlockId = null;
   getIframe()?.contentWindow?.postMessage({ type: 'wb:deselect' }, '*');
-  renderProperties();
+  coordinator.renderProperties?.();
   document.querySelectorAll('.sl-item').forEach(el => el.classList.remove('active'));
 }
 
@@ -524,7 +560,7 @@ export function addBlockAfter(afterId: string | null, type: string, prefill?: Re
     // Pass selectBlock as a callback so it runs inside the onload handler,
     // which is set BEFORE src/srcdoc — no race condition.
     renderCanvas(() => selectBlock(block.id));
-    renderSectionList();
+    coordinator.renderSectionList?.();
   });
 }
 
@@ -536,12 +572,12 @@ export function deleteBlock(id: string): void {
   pushUndo({ type: 'blocks', pageId: visual.activePage.id, data: _beforeDelete, redoData: JSON.stringify(visual.activePage.blocks), label: 'Delete section' });
   if (visual.selectedBlockId === id) {
     visual.selectedBlockId = null;
-    renderProperties();
+    coordinator.renderProperties?.();
   }
   dropCodeTab(visual.activePage.path);
   markDirty();
   renderCanvas();
-  renderSectionList();
+  coordinator.renderSectionList?.();
   updateUndoBtnStates();
 }
 
@@ -557,7 +593,7 @@ export function moveBlock(id: string, dir: -1 | 1): void {
   dropCodeTab(visual.activePage.path);
   markDirty();
   renderCanvas(() => selectBlock(id));
-  renderSectionList();
+  coordinator.renderSectionList?.();
   updateUndoBtnStates();
 }
 
@@ -576,7 +612,7 @@ export function duplicateBlock(id: string): void {
     dropCodeTab(visual.activePage!.path); // keep code tab in sync
     markDirty();
     renderCanvas(() => selectBlock(dupe.id));
-    renderSectionList();
+    coordinator.renderSectionList?.();
     updateUndoBtnStates();
   });
 }
@@ -610,7 +646,7 @@ export function updateBlockValue(
   updateUndoBtnStates();
 
   if (key.startsWith('content.links') || key.startsWith('content.col')) {
-    renderProperties();
+    coordinator.renderProperties?.();
   }
 }
 
@@ -687,7 +723,7 @@ export function initCanvasEvents(): void {
           block.content[field] = value;
           if (visual.activePage) dropCodeTab(visual.activePage.path);
           markDirty();
-          renderSectionList();
+          coordinator.renderSectionList?.();
         }
         break;
       }
@@ -706,7 +742,7 @@ export function initCanvasEvents(): void {
           block.content.html = html;
           dropCodeTab(page.path);
           markDirty();
-          renderProperties(); // refresh char count in properties panel
+          coordinator.renderProperties?.(); // refresh char count in properties panel
         }
         break;
       }
@@ -714,12 +750,12 @@ export function initCanvasEvents(): void {
       case 'wb:domStructure': {
         dmSections = data.sections as DomSection[];
         dmSelected = null;
-        renderSectionList();
+        coordinator.renderSectionList?.();
         // Only update the properties panel for raw HTML pages (inspect mode).
         // Block pages handle selection via wb:select / afterLoad callbacks;
         // calling renderProperties() here would flash stale block panel content.
         if (!visual.activePage || visual.activePage.blocks.length === 0) {
-          renderProperties();
+          coordinator.renderProperties?.();
         }
         break;
       }
@@ -735,8 +771,8 @@ export function initCanvasEvents(): void {
           sectionIndex: data.sectionIndex as number,
           breadcrumb:  (data.breadcrumb  as BreadcrumbItem[]) ?? [],
         };
-        renderProperties();
-        renderSectionList();
+        coordinator.renderProperties?.();
+        coordinator.renderSectionList?.();
         break;
       }
       case 'wb:elementHover': {
@@ -834,6 +870,28 @@ export function initCanvasEvents(): void {
         }
         break;
       }
+      case 'wb:blockReorder': {
+        // Drag-to-reorder from canvas iframe
+        const page = visual.activePage;
+        if (!page) break;
+        const fromId = data.fromId as string;
+        const toId   = data.toId   as string;
+        const insertBefore = data.insertBefore as boolean;
+        const fromIdx = page.blocks.findIndex(b => b.id === fromId);
+        const toIdx   = page.blocks.findIndex(b => b.id === toId);
+        if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) break;
+        const _before = JSON.stringify(page.blocks);
+        const [moved] = page.blocks.splice(fromIdx, 1);
+        const newToIdx = page.blocks.findIndex(b => b.id === toId);
+        if (newToIdx === -1) { page.blocks.splice(fromIdx, 0, moved); break; } // restore on miss
+        page.blocks.splice(insertBefore ? newToIdx : newToIdx + 1, 0, moved);
+        pushUndo({ type: 'blocks', pageId: page.id, data: _before, redoData: JSON.stringify(page.blocks), label: 'Reorder section' });
+        markDirty();
+        renderCanvas(() => selectBlock(fromId));
+        coordinator.renderSectionList?.();
+        updateUndoBtnStates();
+        break;
+      }
       case 'wb:imageUpload': {
         const base64 = data.base64 as string;
         const filename = data.filename as string;
@@ -907,8 +965,8 @@ function _applySnapshot(snap: { type: string; pageId: string; data: string }): v
     if (visual.activePage?.id === page.id) {
       dropCodeTab(page.path);
       renderCanvas();
-      renderSectionList();
-      renderProperties();
+      coordinator.renderSectionList?.();
+      coordinator.renderProperties?.();
     }
   } else if (snap.type === 'html') {
     const tab = state.openTabs.find(t => t.path === page.path);
@@ -1054,8 +1112,8 @@ export function exposeCanvasGlobals(): void {
         classes: sec.classes, inlineStyle: '', styles: {}, sectionIndex: sec.index,
         breadcrumb: [],
       };
-      renderProperties();
-      renderSectionList();
+      coordinator.renderProperties?.();
+      coordinator.renderSectionList?.();
     }
   };
   w._moveDmSection      = (selector: string, direction: 'up' | 'down') => dmMoveSection(selector, direction);
@@ -1568,4 +1626,15 @@ function _blockCard(type: string, def: (typeof BLOCK_DEFS)[string], isLD = false
       ${isLD ? '<span class="elem-ld-badge">LD</span>' : ''}
     </div>
   </div>`;
+}
+
+// ── Coordinator registration ───────────────────────────────────────────
+// Called once from visual/index.ts init block to populate coordinator slots.
+
+export function registerCanvasCallbacks(): void {
+  Object.assign(coordinator, {
+    rerenderBlock, applyThemeToCanvas, renderCanvas, updateVisualSaveBtn,
+    syncActivePageCodeTab, previewBlockAnimation, dmSetInlineStyle,
+    dmHighlightSection, dmSetCssLive, getDmSelected, updateBlockValue, deselectBlock,
+  });
 }

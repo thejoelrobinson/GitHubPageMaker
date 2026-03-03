@@ -71,6 +71,11 @@ export interface AppConfig {
   owner: string;
   repo: string;
   branch: string;
+  ollamaEnabled:    boolean;
+  ollamaEndpoint:   string;
+  ollamaModel:      string;
+  browserLLMEnabled: boolean;
+  browserLLMModel:   string;
 }
 
 export interface AppState extends AppConfig {
@@ -84,3 +89,11 @@ export interface AppState extends AppConfig {
 
 export type DeviceSize = 'desktop' | 'tablet' | 'mobile';
 export type EditorMode = 'code' | 'visual';
+
+/** Credentials for a GitHub API call — optional override for global state. */
+export interface GitHubContext {
+  token:  string;
+  owner:  string;
+  repo:   string;
+  branch: string;
+}

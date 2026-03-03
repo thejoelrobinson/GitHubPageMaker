@@ -1,8 +1,7 @@
-import { visual, state } from '../state';
+import { visual, state, markVisualDirty } from '../state';
 import { preCacheLinkedAssets } from './asset-cache';
 import { newBlock } from './blocks';
-import { renderCanvas, deselectBlock, updateVisualSaveBtn } from './canvas';
-import { renderProperties } from './properties';
+import { coordinator } from './visual-coordinator';
 import { notify } from '../ui/notifications';
 import { BLOCK_DEFS } from './blocks';
 import { pageUid, titleToPath, escapeHtml } from '../utils';
@@ -72,19 +71,31 @@ export function addEmptyPage(title: string, path: string): Page {
 }
 
 export function deletePage(id: string): void {
-  if (visual.pages.length <= 1) { notify('Cannot delete the last page', 'warning'); return; }
-  if (!confirm('Delete this page? This cannot be undone.')) return;
+  const page = visual.pages.find(p => p.id === id);
+  if (!page) return;
+  const isLast = visual.pages.length === 1;
+  const msg = isLast
+    ? `Delete "${page.title}"? This is your last page — the site will be empty until you add a new one.`
+    : `Delete "${page.title}"? This cannot be undone.`;
+  if (!confirm(msg)) return;
+  const wasHome = page.isHome;
   visual.pages = visual.pages.filter(p => p.id !== id);
-  if (visual.activePage?.id === id) {
-    switchPage(visual.pages[0].id);
+  if (visual.pages.length === 0) {
+    visual.activePage = null;
+    visual.selectedBlockId = null;
+  } else {
+    if (wasHome) visual.pages[0].isHome = true;
+    if (visual.activePage?.id === id) switchPage(visual.pages[0].id);
   }
-  visual.dirty = true;
-  updateVisualSaveBtn();
+  markVisualDirty();
+  coordinator.updateVisualSaveBtn?.();
+  coordinator.renderCanvas?.();
   renderPageList();
+  coordinator.renderSectionList?.();
 }
 
 export function switchPage(id: string): void {
-  deselectBlock();
+  coordinator.deselectBlock?.();
   const page = visual.pages.find(p => p.id === id);
   if (!page) return;
   visual.activePage = page;
@@ -117,15 +128,15 @@ export function switchPage(id: string): void {
         import('../preview-sw-client').then(({ cacheFileInSW }) =>
           cacheFileInSW(page.path, file.content),
         );
-        if (visual.activePage?.id === id) renderCanvas();
+        if (visual.activePage?.id === id) coordinator.renderCanvas?.();
       })
       .catch(() => { /* file may not exist yet — canvas shows empty state */ });
   }
 
   renderPageList();
-  renderCanvas();
+  coordinator.renderCanvas?.();
   renderSectionList();
-  renderProperties();
+  coordinator.renderProperties?.();
   // Update section list header to show which page sections belong to
   const sectionPageLabel = document.getElementById('vis-section-page-label');
   if (sectionPageLabel) sectionPageLabel.textContent = page.title;
@@ -154,9 +165,47 @@ export function renamePage(id: string): void {
 
 // ── Render page list ──────────────────────────────────────────────────
 
+// SVG icons shared across page action strip
+const ICON_BLANK    = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>`;
+const ICON_TEMPLATE = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"/></svg>`;
+const ICON_ASSETS   = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3 3m0 0 3-3m-3 3V2.25"/></svg>`;
+
+/** Renders the 3-card strip into #vis-page-actions (separate from the scrollable list). */
+function renderPageActions(): void {
+  const strip = document.getElementById('vis-page-actions');
+  if (!strip) return;
+  const activePage = visual.activePage;
+  const assetTarget = activePage ? `'${activePage.id}'` : '';
+  const templateTitle  = activePage ? `Apply template to "${escapeHtml(activePage.title)}"` : 'Pick a template';
+  const assetsTitle    = activePage ? `Rebuild "${escapeHtml(activePage.title)}" from assets` : 'Build page from files';
+  strip.innerHTML = `
+    <div class="page-method-picker page-method-picker--sm">
+      <button class="pmp-card" onclick="window._showAddPageForm()" title="Create a new blank page">
+        <div class="pmp-icon">${ICON_BLANK}</div>
+        <div class="pmp-name">Blank</div>
+      </button>
+      <button class="pmp-card" onclick="window._showTemplateGallery()" title="${templateTitle}">
+        <div class="pmp-icon">${ICON_TEMPLATE}</div>
+        <div class="pmp-name">Template</div>
+      </button>
+      <button class="pmp-card pmp-card--ai" onclick="window._openAssetWizard(${assetTarget})" title="${assetsTitle}">
+        <div class="pmp-badge">AUTO</div>
+        <div class="pmp-icon">${ICON_ASSETS}</div>
+        <div class="pmp-name">Assets</div>
+      </button>
+    </div>`;
+}
+
 export function renderPageList(): void {
   const container = document.getElementById('vis-page-list') as HTMLElement;
   if (!container) return;
+
+  renderPageActions();
+
+  if (!visual.pages.length) {
+    container.innerHTML = '<div class="pl-empty">No pages yet</div>';
+    return;
+  }
 
   container.innerHTML = visual.pages.map(p => `
     <div class="pl-item ${p.id === visual.activePage?.id ? 'active' : ''}" data-page-id="${p.id}" onclick="window._switchPage('${p.id}')">
@@ -167,9 +216,9 @@ export function renderPageList(): void {
         <button onclick="event.stopPropagation();window._renamePage('${p.id}')" title="Rename" class="pp-icon-btn">
           <svg viewBox="0 0 16 16" fill="currentColor" width="11"><path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Z"/></svg>
         </button>
-        ${!p.isHome ? `<button onclick="event.stopPropagation();window._deletePage('${p.id}')" title="Delete" class="pp-icon-btn danger">
+        <button onclick="event.stopPropagation();window._deletePage('${p.id}')" title="Delete" class="pp-icon-btn danger">
           <svg viewBox="0 0 16 16" fill="currentColor" width="11"><path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.559a.75.75 0 1 0-1.492.142l.94 9.48A1.75 1.75 0 0 0 5.688 17.5h4.624a1.75 1.75 0 0 0 1.744-1.319l.94-9.48a.75.75 0 0 0-1.492-.142l-.94 9.48a.25.25 0 0 1-.249.188H5.688a.25.25 0 0 1-.249-.188l-.943-9.479Z"/></svg>
-        </button>` : ''}
+        </button>
       </div>
     </div>
   `).join('');
@@ -343,7 +392,7 @@ export function confirmAddPage(): void {
   const page = addPage(title, path);
   document.getElementById('add-page-modal')?.classList.add('hidden');
   switchPage(page.id);
-  updateVisualSaveBtn();
+  coordinator.updateVisualSaveBtn?.();
   notify(`Page "${title}" created`, 'success');
 }
 
@@ -353,20 +402,18 @@ export function handleAddNavLink(blockId: string): void {
   const block = visual.activePage?.blocks.find(b => b.id === blockId);
   if (!block) return;
   (block.content.links as NavLink[]).push({ text: 'New Link', href: '#' });
-  visual.dirty = true;
-  if (visual.activePage) visual.activePage.dirty = true;
-  updateVisualSaveBtn();
+  markVisualDirty();
+  coordinator.updateVisualSaveBtn?.();
   import('./canvas').then(({ rerenderBlock: rb }) => rb(blockId));
-  renderProperties();
+  coordinator.renderProperties?.();
 }
 
 export function handleRemoveNavLink(blockId: string, idx: number): void {
   const block = visual.activePage?.blocks.find(b => b.id === blockId);
   if (!block) return;
   (block.content.links as NavLink[]).splice(idx, 1);
-  visual.dirty = true;
-  if (visual.activePage) visual.activePage.dirty = true;
-  updateVisualSaveBtn();
+  markVisualDirty();
+  coordinator.updateVisualSaveBtn?.();
   import('./canvas').then(({ rerenderBlock: rb }) => rb(blockId));
-  renderProperties();
+  coordinator.renderProperties?.();
 }

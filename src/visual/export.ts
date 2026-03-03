@@ -1,6 +1,6 @@
 import type { Block, Page, Theme } from '../types';
 import { renderBlock } from './blocks';
-import { escapeHtml } from '../utils';
+import { escapeHtml, stripMd } from '../utils';
 import { state } from '../state';
 
 // ── Section entrance animations ───────────────────────────────────────
@@ -128,18 +128,22 @@ function safeCssString(s: string): string {
 }
 
 function themeCSS(theme: Theme): string {
-  return `:root{
-  --primary:${theme.primary};
-  --accent:${theme.accent};
-  --text:${theme.text};
-  --text-muted:${theme.textMuted};
-  --bg:${theme.bg};
-  --bg-alt:${theme.bgAlt};
-  --font-heading:'${safeCssString(theme.headingFont)}',sans-serif;
-  --font-body:'${safeCssString(theme.bodyFont)}',sans-serif;
-  --radius:${theme.radius}px;
-}
-body{font-family:var(--font-body);color:var(--text);background:var(--bg)}`;
+  return `:root{--primary:${theme.primary};--accent:${theme.accent};--text:${theme.text};--text-muted:${theme.textMuted};--bg:${theme.bg};--bg-alt:${theme.bgAlt};--font-heading:'${safeCssString(theme.headingFont)}',sans-serif;--font-body:'${safeCssString(theme.bodyFont)}',sans-serif;--radius:${theme.radius}px}
+body{font-family:var(--font-body);color:var(--text);background:var(--bg);line-height:1.6}
+h1,h2,h3,h4,h5,h6{font-family:var(--font-heading);color:var(--primary);line-height:1.2}
+a{color:var(--accent);text-decoration:none}
+small,figcaption,caption{color:var(--text-muted);font-size:.875em}
+blockquote{border-left:3px solid var(--accent);color:var(--text-muted);padding-left:1em;font-style:italic;margin:1em 0}
+code,kbd,samp{background:var(--bg-alt);border-radius:calc(var(--radius) / 2);padding:.1em .35em}
+pre{background:var(--bg-alt);border-radius:var(--radius);padding:1em;overflow-x:auto}
+pre code{background:none;padding:0}
+th{font-family:var(--font-heading);color:var(--primary)}
+td{color:var(--text)}
+mark{background:var(--accent);color:#fff}
+hr{border:none;border-top:1px solid var(--bg-alt);margin:1.5em 0}
+button,[type=button],[type=submit],[type=reset]{font-family:var(--font-body);border-radius:var(--radius);cursor:pointer}
+input:not([type=range]):not([type=checkbox]):not([type=radio]),select,textarea{font-family:var(--font-body);border-radius:var(--radius);color:var(--text);background:var(--bg)}
+input:focus,select:focus,textarea:focus{outline-color:var(--accent)}`;
 }
 
 // ── In-iframe editing layer ─────────────────────────────────────────────
@@ -154,30 +158,42 @@ export const WB_BASE_ID    = 'wb-base-tag';
 /** CSS injected into the editing iframe */
 export const EDITING_CSS = `
 [data-block-id]{position:relative;outline:2px solid transparent;outline-offset:-2px;transition:outline-color .15s;cursor:default}
-[data-block-id]:hover{outline-color:rgba(99,102,241,.4)}
-[data-block-id].wb-sel{outline-color:#6366f1}
+[data-block-id]:hover{outline-color:rgba(0,120,212,.4)}
+[data-block-id].wb-sel{outline-color:#0078d4}
 .wb-controls{position:absolute;top:8px;right:8px;z-index:9998;display:flex;gap:3px;opacity:0;transition:opacity .15s;background:rgba(15,23,42,.88);border-radius:6px;padding:3px 5px;pointer-events:auto}
 [data-block-id]:hover .wb-controls,[data-block-id].wb-sel .wb-controls{opacity:1}
 .wbc{width:26px;height:26px;border:none;background:none;color:rgba(255,255,255,.75);cursor:pointer;border-radius:4px;display:flex;align-items:center;justify-content:center;transition:all .1s;padding:0}
 .wbc:hover{background:rgba(255,255,255,.15);color:#fff}
 .wbc.del:hover{background:rgba(244,67,71,.25);color:#f88}
 .wbc:disabled{opacity:.3;cursor:not-allowed}
-.wb-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;background:rgba(99,102,241,.08);padding:0;height:0;overflow:hidden;cursor:pointer;color:#6366f1;font-size:12px;font-weight:600;font-family:system-ui,-apple-system,sans-serif;transition:height .15s,opacity .15s;opacity:0}
-[data-block-id]:hover .wb-add{height:32px;opacity:1}
-[data-field]{cursor:text;outline:1px dashed rgba(99,102,241,.3);outline-offset:2px;border-radius:2px}
-[data-field]:hover{background:rgba(99,102,241,.08);outline-color:rgba(99,102,241,.6)}
-[data-field]:focus,[data-field]:focus-within{outline:2px solid #6366f1!important;outline-offset:2px;border-radius:2px;background:rgba(99,102,241,.04);cursor:text}
-.wb-toolbar{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:9999;background:#1e293b;border:1px solid #334155;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.4);display:none;align-items:center;gap:2px;padding:4px 6px}
+.wbc.grip{cursor:grab;touch-action:none}
+.wbc.grip:active{cursor:grabbing}
+.wb-drag-over-before::before{content:'';display:block;height:3px;background:#0078d4;border-radius:2px;margin:0 16px;box-shadow:0 0 8px rgba(0,120,212,.6)}
+.wb-drag-over-after::after{content:'';display:block;height:3px;background:#0078d4;border-radius:2px;margin:0 16px;box-shadow:0 0 8px rgba(0,120,212,.6)}
+[data-wb-dragging]{opacity:.35;outline:2px dashed rgba(0,120,212,.5)!important}
+.wb-add{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;width:100%;border:none;background:transparent;padding:0;height:10px;overflow:visible;cursor:pointer;color:#0078d4;font-size:12px;font-weight:600;font-family:system-ui,-apple-system,sans-serif;transition:height .15s,background .12s;z-index:5}
+.wb-add::before{content:'';position:absolute;top:50%;left:10%;right:10%;height:2px;background:rgba(0,120,212,.25);border-radius:2px;transform:translateY(-50%);transition:opacity .15s}
+.wb-add .wb-add-label{display:none;white-space:nowrap}
+.wb-add .wb-add-plus{display:none;width:20px;height:20px;border-radius:50%;background:#0078d4;color:#fff;font-size:14px;line-height:20px;text-align:center;flex-shrink:0}
+.wb-add:hover,.wb-add:focus{height:38px;background:rgba(0,120,212,.07)}
+.wb-add:hover::before,.wb-add:focus::before{opacity:0}
+.wb-add:hover .wb-add-label,.wb-add:focus .wb-add-label{display:block}
+.wb-add:hover .wb-add-plus,.wb-add:focus .wb-add-plus{display:flex;align-items:center;justify-content:center}
+body.wb-interact .wb-add{display:none!important}
+[data-field]{cursor:text;outline:1px dashed rgba(0,120,212,.3);outline-offset:2px;border-radius:2px}
+[data-field]:hover{background:rgba(0,120,212,.08);outline-color:rgba(0,120,212,.6)}
+[data-field]:focus,[data-field]:focus-within{outline:2px solid #0078d4!important;outline-offset:2px;border-radius:2px;background:rgba(0,120,212,.04);cursor:text}
+.wb-toolbar{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:9999;background:#1a1a1d;border:1px solid #383840;border-radius:7px;box-shadow:0 4px 20px rgba(0,0,0,.5);display:none;align-items:center;gap:2px;padding:4px 6px}
 .wb-toolbar.show{display:flex}
-.wbt{width:28px;height:26px;border-radius:4px;border:none;background:none;color:#94a3b8;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;transition:all .15s;font-family:system-ui}
-.wbt:hover{background:#334155;color:#e2e8f0}
-.wbt-done{background:#6366f1;color:white;border:none;border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer;font-weight:500;font-family:system-ui}
-.wb-sep{width:1px;height:16px;background:#334155;margin:0 2px}
-[data-wb-highlighted]{outline:3px solid rgba(99,102,241,.7)!important;outline-offset:2px}
-[data-wb-hovering]{outline:2px dashed rgba(99,102,241,.45)!important;outline-offset:3px}
+.wbt{width:28px;height:26px;border-radius:4px;border:none;background:none;color:#8d8d9c;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;transition:all .15s;font-family:system-ui}
+.wbt:hover{background:#2d2d33;color:#dcdce2}
+.wbt-done{background:#0078d4;color:white;border:none;border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer;font-weight:500;font-family:system-ui}
+.wb-sep{width:1px;height:16px;background:#383840;margin:0 2px}
+[data-wb-highlighted]{outline:3px solid rgba(0,120,212,.7)!important;outline-offset:2px}
+[data-wb-hovering]{outline:2px dashed rgba(0,120,212,.45)!important;outline-offset:3px}
 body.wb-inspect *{cursor:crosshair!important}
 body.wb-inspect [data-field]{cursor:text!important}
-body.wb-inspect [data-wb-hovering]{outline:2px solid rgba(37,99,235,.85)!important;outline-offset:2px;background:rgba(37,99,235,.06)!important}
+body.wb-inspect [data-wb-hovering]{outline:2px solid rgba(0,120,212,.85)!important;outline-offset:2px;background:rgba(0,120,212,.06)!important}
 body.wb-interact [data-block-id]{outline:none!important;cursor:auto!important;transition:none!important}
 body.wb-interact [data-block-id]:hover{outline:none!important}
 body.wb-interact [data-block-id].wb-sel{outline:none!important}
@@ -202,7 +218,7 @@ body.wb-interact a,body.wb-interact button,body.wb-interact input,body.wb-intera
 }
 .wb-img-empty {
   min-height: 80px;
-  border: 2px dashed rgba(99,102,241,.3)!important;
+  border: 2px dashed rgba(0,120,212,.3)!important;
   position: relative;
 }
 .wb-img-empty::after {
@@ -212,33 +228,33 @@ body.wb-interact a,body.wb-interact button,body.wb-interact input,body.wb-intera
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(99,102,241,.6);
+  color: rgba(0,120,212,.6);
   font-size: 13px;
   font-family: system-ui, sans-serif;
   pointer-events: none;
 }
-body.wb-image-drag-over { outline: 3px dashed rgba(99,102,241,.5)!important; }
-body.wb-image-drag-over img { outline: 4px dashed rgba(99,102,241,.8)!important; outline-offset: 3px; }
-[data-drop-field].wb-drop-target { outline: 3px dashed rgba(99,102,241,.7)!important; outline-offset: 3px; }
-[data-drop-field].wb-drop-active { outline: 3px solid #6366f1!important; outline-offset: 3px; background: rgba(99,102,241,.08)!important; }
-body.wb-media-drag-over [data-drop-field] { outline: 2px dashed rgba(99,102,241,.4)!important; outline-offset: 2px; }
+body.wb-image-drag-over { outline: 3px dashed rgba(0,120,212,.5)!important; }
+body.wb-image-drag-over img { outline: 4px dashed rgba(0,120,212,.8)!important; outline-offset: 3px; }
+[data-drop-field].wb-drop-target { outline: 3px dashed rgba(0,120,212,.7)!important; outline-offset: 3px; }
+[data-drop-field].wb-drop-active { outline: 3px solid #0078d4!important; outline-offset: 3px; background: rgba(0,120,212,.08)!important; }
+body.wb-media-drag-over [data-drop-field] { outline: 2px dashed rgba(0,120,212,.4)!important; outline-offset: 2px; }
 .wb-block-drop-before::before {
-  content:''; display:block; height:4px; background:#6366f1; border-radius:2px;
-  margin:0 20px; box-shadow:0 0 8px rgba(99,102,241,.5);
+  content:''; display:block; height:4px; background:#0078d4; border-radius:2px;
+  margin:0 20px; box-shadow:0 0 8px rgba(0,120,212,.5);
   animation:wb-drop-pulse .8s ease-in-out infinite alternate;
 }
 .wb-block-drop-after::after {
-  content:''; display:block; height:4px; background:#6366f1; border-radius:2px;
-  margin:0 20px; box-shadow:0 0 8px rgba(99,102,241,.5);
+  content:''; display:block; height:4px; background:#0078d4; border-radius:2px;
+  margin:0 20px; box-shadow:0 0 8px rgba(0,120,212,.5);
   animation:wb-drop-pulse .8s ease-in-out infinite alternate;
 }
 @keyframes wb-drop-pulse { from{opacity:.6} to{opacity:1} }
 body.wb-block-drop-empty {
-  outline:3px dashed rgba(99,102,241,.5)!important; outline-offset:-3px;
+  outline:3px dashed rgba(0,120,212,.5)!important; outline-offset:-3px;
 }
 body.wb-block-drop-empty::after {
   content:'Drop element here'; display:flex; align-items:center; justify-content:center;
-  min-height:200px; color:rgba(99,102,241,.7); font-size:16px; font-weight:600;
+  min-height:200px; color:rgba(0,120,212,.7); font-size:16px; font-weight:600;
   font-family:system-ui,sans-serif;
 }
 /* ── Animation preview (fired by wb:replayAnim) ──────────────────────
@@ -577,7 +593,7 @@ if(!hasBlocks){
       '</label>',
       '<div style="width:1px;height:16px;background:#334155"></div>',
       '<span style="font-size:10px;color:#94a3b8">Pad</span>',
-      '<input type="range" min="0" max="80" step="4" value="'+Math.round(parseFloat(cs.paddingTop))+'" style="width:60px;accent-color:#6366f1;cursor:pointer" class="wbet-padding">',
+      '<input type="range" min="0" max="80" step="4" value="'+Math.round(parseFloat(cs.paddingTop))+'" style="width:60px;accent-color:#0078d4;cursor:pointer" class="wbet-padding">',
       '<div style="width:1px;height:16px;background:#334155"></div>',
       '<button title="Delete this section" style="width:26px;height:26px;border-radius:4px;border:none;background:none;color:#94a3b8;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .1s;font-size:14px" class="wbet-delete">X</button>',
       '<button title="Close toolbar" style="width:22px;height:22px;border-radius:4px;border:none;background:none;color:#64748b;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px" class="wbet-close">x</button>',
@@ -864,16 +880,29 @@ if(!hasBlocks){
   // ══════════════════════════════════════════════
   var customEditEl = null, customEditBid = null;
 
+  // Convert an editable element's innerHTML back to markdown for storage.
+  // Handles bold/italic from both typing and toolbar (execCommand may emit <b>/<i>).
+  function htmlToMd(html){
+    return html
+      .replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**')
+      .replace(/<b>([\s\S]*?)<\/b>/gi,'**$1**')
+      .replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*')
+      .replace(/<i>([\s\S]*?)<\/i>/gi,'*$1*')
+      .replace(/<br\s*\/?>/gi,'\n')
+      .replace(/<\/p>/gi,'\n').replace(/<p[^>]*>/gi,'')
+      .replace(/<\/div>/gi,'\n').replace(/<div[^>]*>/gi,'')
+      .replace(/<[^>]+>/g,'')
+      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' ').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+      .replace(/\n{3,}/g,'\n\n')
+      .trim();
+  }
+
   // Make every [data-field] immediately contenteditable so clicking
   // places the caret naturally — no click-to-activate needed.
+  // Rendered HTML (bold/italic) is kept as-is so users see formatted text.
   function activateFields(){
     document.querySelectorAll('[data-field]').forEach(function(f){
       if(f.contentEditable==='true')return;
-      // Convert rendered markdown HTML back to source so innerText saves correctly
-      var h=f.innerHTML;
-      h=h.replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**');
-      h=h.replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*');
-      f.innerHTML=h;
       f.contentEditable='true';
       // Ensure the element is keyboard-focusable in all browsers (Safari requires
       // tabIndex on non-interactive elements even when contentEditable is set).
@@ -885,12 +914,12 @@ if(!hasBlocks){
   }
   activateFields();
 
-  // Save a field whenever it loses focus
+  // Save a field whenever it loses focus — convert innerHTML back to markdown
   document.addEventListener('blur',function(e){
     var f=e.target;
     if(!f||!f.dataset||!f.dataset.field)return;
     var bid=f.dataset.blockId;
-    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:f.innerText.trim()},'*');
+    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:htmlToMd(f.innerHTML)},'*');
   },true);
 
   document.addEventListener('click',function(e){
@@ -1008,6 +1037,7 @@ if(!hasBlocks){
   });
   document.addEventListener('keydown',function(e){
     if(e.key==='Escape'){
+      if(dragBlockId) cancelDrag();
       if(document.activeElement&&document.activeElement.dataset&&document.activeElement.dataset.field){
         document.activeElement.blur();
       }
@@ -1015,6 +1045,66 @@ if(!hasBlocks){
       doDeSel();
     }
   });
+
+  // ── Drag-to-reorder (mouse-based, within-iframe) ─────────────────
+  var dragBlockId=null,dragEl=null,dragDropTarget=null,dragInsertBefore=false;
+
+  window._startBlockDrag=function(e,id){
+    e.preventDefault();
+    // Guard against stale state from previous incomplete drag
+    if(dragBlockId)cancelDrag();
+    dragBlockId=id;
+    dragEl=document.querySelector('[data-block-id="'+id+'"]');
+    if(dragEl)dragEl.setAttribute('data-wb-dragging','1');
+    // Remove before re-adding to prevent listener accumulation
+    document.removeEventListener('mousemove',onDragMove);
+    document.removeEventListener('mouseup',onDragEnd);
+    document.addEventListener('mousemove',onDragMove);
+    document.addEventListener('mouseup',onDragEnd);
+  };
+
+  function clearDragHighlights(){
+    document.querySelectorAll('.wb-drag-over-before,.wb-drag-over-after').forEach(function(el){
+      el.classList.remove('wb-drag-over-before','wb-drag-over-after');
+    });
+  }
+
+  function cancelDrag(){
+    clearDragHighlights();
+    if(dragEl){dragEl.removeAttribute('data-wb-dragging');}
+    dragBlockId=null;dragEl=null;dragDropTarget=null;
+    document.removeEventListener('mousemove',onDragMove);
+    document.removeEventListener('mouseup',onDragEnd);
+  }
+
+  function onDragMove(e){
+    if(!dragBlockId)return;
+    clearDragHighlights();
+    var blocks=Array.from(document.querySelectorAll('[data-block-id]'));
+    var target=null,before=false;
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      if(b.getAttribute('data-block-id')===dragBlockId)continue;
+      var r=b.getBoundingClientRect();
+      if(e.clientY>=r.top&&e.clientY<=r.bottom){
+        target=b;before=(e.clientY<r.top+r.height/2);break;
+      }
+    }
+    if(target){
+      dragDropTarget=target.getAttribute('data-block-id');
+      dragInsertBefore=before;
+      target.classList.add(before?'wb-drag-over-before':'wb-drag-over-after');
+    } else {
+      dragDropTarget=null;
+    }
+  }
+
+  function onDragEnd(){
+    if(dragBlockId&&dragDropTarget){
+      P.postMessage({type:'wb:blockReorder',fromId:dragBlockId,toId:dragDropTarget,insertBefore:dragInsertBefore},'*');
+    }
+    cancelDrag();
+  }
 }
 })();
 </script>`;
@@ -1030,17 +1120,18 @@ function editingBlockWrapper(block: Block, theme: Theme, idx: number, total: num
   const downSvg = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M12.53 8.22a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L2.97 9.28a.75.75 0 0 1 1.06-1.06l2.72 2.72V2.75a.75.75 0 0 1 1.5 0v8.19l2.72-2.72a.75.75 0 0 1 1.06 0Z"/></svg>`;
   const dupSvg  = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"/></svg>`;
   const delSvg  = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.559a.75.75 0 1 0-1.492.142l.94 9.48A1.75 1.75 0 0 0 5.688 17.5h4.624a1.75 1.75 0 0 0 1.744-1.319l.94-9.48a.75.75 0 0 0-1.492-.142l-.94 9.48a.25.25 0 0 1-.249.188H5.688a.25.25 0 0 1-.249-.188l-.943-9.479Z"/></svg>`;
-  const addSvg  = `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/></svg>`;
+  const gripSvg = `<svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor"><circle cx="3" cy="2" r="1.2"/><circle cx="7" cy="2" r="1.2"/><circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/><circle cx="3" cy="12" r="1.2"/><circle cx="7" cy="12" r="1.2"/></svg>`;
 
   return `<div data-block-id="${id}" data-block-type="${escapeHtml(block.type)}" style="position:relative">
   <div class="wb-controls">
+    <button class="wbc grip" data-drag-id="${id}" title="Drag to reorder" onmousedown="window._startBlockDrag(event,'${id}')">${gripSvg}</button>
     <button class="wbc" onclick="window.parent._moveBlock('${id}',-1)" title="Move Up" ${isFirst ? 'disabled' : ''}>${upSvg}</button>
     <button class="wbc" onclick="window.parent._moveBlock('${id}',1)" title="Move Down" ${isLast ? 'disabled' : ''}>${downSvg}</button>
     <button class="wbc" onclick="window.parent._duplicateBlock('${id}')" title="Duplicate">${dupSvg}</button>
     <button class="wbc del" onclick="window.parent._deleteBlock('${id}')" title="Delete">${delSvg}</button>
   </div>
   <div class="wb-inner">${renderBlock(block, theme, true)}</div>
-  <button class="wb-add" onclick="window.parent._addBlockHere('${id}')">${addSvg} Add Section</button>
+  <button class="wb-add" onclick="window.parent._addBlockHere('${id}')"><span class="wb-add-plus">+</span><span class="wb-add-label">Add Section</span></button>
 </div>`;
 }
 
@@ -1152,14 +1243,14 @@ ${hasAnims ? SECTION_ANIM_SCRIPT : ''}
   }
 
   // ── Theme-generated head path (default for builder-created pages) ──
-  const pageTitle = page.isHome ? siteName : `${page.title} — ${siteName}`;
+  const pageTitle = page.isHome ? stripMd(siteName) : `${stripMd(page.title)} — ${stripMd(siteName)}`;
   const depth = page.path.split('/').length - 1;
   const base  = depth > 0 ? '../'.repeat(depth) : './';
 
   const emptyPlaceholder = editing && !page.blocks.length
     ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:400px;color:#64748b;font-family:system-ui;gap:12px">
         <div style="font-size:15px">This page is empty</div>
-        <button onclick="window.parent._addBlockHere(null)" style="background:#6366f1;color:#fff;border:none;border-radius:6px;padding:10px 22px;font-size:13px;cursor:pointer;font-weight:600">+ Add First Section</button>
+        <button onclick="window.parent._addBlockHere(null)" style="background:#0078d4;color:#fff;border:none;border-radius:6px;padding:10px 22px;font-size:13px;cursor:pointer;font-weight:600">+ Add First Section</button>
        </div>`
     : '';
 

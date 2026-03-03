@@ -1,8 +1,8 @@
 import {
   visual, state, toVisualProjectState, applyVisualProjectState, saveLastMode,
-  loadLocalDraft, clearLocalDraft,
+  loadLocalDraft, clearLocalDraft, markVisualDirty,
 } from '../state';
-import { ghFetch, writeFile, decodeBase64, readFile, encodeRepoPath } from '../github';
+import { ghFetch, writeFile, uploadFile, decodeBase64, readFile, encodeRepoPath } from '../github';
 import { pageUid, detectLanguage } from '../utils';
 import { cacheFileInSW, invalidateSWFile } from '../preview-sw-client';
 import { preCacheLinkedAssets, cacheEntireRepoTree } from './asset-cache';
@@ -14,15 +14,17 @@ import { openGeneratedFile, activateTab, flushSWCacheTimers } from '../code-edit
 import {
   renderCanvas, initCanvasEvents, renderSectionPicker,
   exposeCanvasGlobals, updateVisualSaveBtn, applyThemeToCanvas,
-  exposeNavLinkGlobals, selectBlock, setInspectMode, setInteractMode, initCanvasDragDrop,
+  exposeNavLinkGlobals, selectBlock, setInspectMode, setInteractMode, getInteractMode, initCanvasDragDrop,
+  registerCanvasCallbacks,
 } from './canvas';
-import { initSidebarCssPanel } from './properties';
+import { initSidebarCssPanel, registerPropertiesCallbacks } from './properties';
 import { renderProperties } from './properties';
-import { initTemplateGallery, initPreviewButton, initMobilePreview, stopMobilePreview, showSetupWizard } from './templates';
+import { coordinator } from './visual-coordinator';
+import { initTemplateGallery, initPreviewButton, showSetupWizard } from './templates';
 import { initAssetWizard } from './asset-wizard';
 import {
-  renderPageList, createDefaultPage, switchPage,
-  openAddPageModal, confirmAddPage,
+  renderPageList, renderSectionList, createDefaultPage, switchPage,
+  openAddPageModal, confirmAddPage, showAddPageForm,
 } from './pages';
 import { notify } from '../ui/notifications';
 
@@ -40,6 +42,10 @@ export async function enterVisualMode(): Promise<void> {
     // flag false — that would cause duplicate event listeners on retry.
     visualInitialised = true;
     try {
+      // Register coordinator callbacks to break canvas ↔ properties ↔ pages cycle
+      registerCanvasCallbacks();
+      registerPropertiesCallbacks();
+      coordinator.renderSectionList = renderSectionList;
       exposeCanvasGlobals();
       exposePageAndNavGlobals();
       initCanvasEvents();   // registers the window.message listener once
@@ -49,13 +55,11 @@ export async function enterVisualMode(): Promise<void> {
       initToolModeButtons();
       initCssActivityButton();
       initUndoKeyboard();
-      initElementsActivityButton();
       // Render the block picker embedded in the pages panel (targets #elements-panel-body)
       import('./canvas').then(({ renderElementsPanel }) => renderElementsPanel());
       initTemplateGallery();
       initAssetWizard();
       initPreviewButton();
-      initMobilePreview();
     } catch (e) {
       notify('Visual editor init error: ' + (e as Error).message, 'warning');
       console.error('[visual] Init failed:', e);
@@ -80,8 +84,8 @@ export async function enterVisualMode(): Promise<void> {
   setInteractMode(false);
   setInspectMode(true);
 
-  document.getElementById('vis-action-group')!.style.display  =
-    state.connected ? 'flex' : 'none';
+  // Always show save/publish buttons — publish will prompt for GitHub if needed
+  document.getElementById('vis-action-group')!.style.display = 'flex';
   // Status bar: hide code-specific items in visual mode
   document.querySelectorAll('.status-code-only').forEach(el => el.classList.add('hidden'));
 
@@ -105,8 +109,21 @@ export async function enterVisualMode(): Promise<void> {
   if (state.connected && !visual.pages.length) {
     // First entry after connecting — fetch from repo
     await loadVisualState();
+  } else if (!state.connected && !visual.pages.length) {
+    // Working locally — restore a saved draft if one exists, otherwise blank page
+    const localDraft = loadLocalDraft();
+    if (localDraft && pagesHaveBlocks(localDraft.visualState.pages ?? [])) {
+      applyVisualProjectState(localDraft.visualState);
+      if (localDraft.visualState.pendingUploads) {
+        visual.pendingUploads = localDraft.visualState.pendingUploads as typeof visual.pendingUploads;
+      }
+      setDraftIndicator('unsaved');
+      notify('Draft restored', 'info');
+    } else {
+      visual.pages = [createDefaultPage()];
+      visual.activePage = visual.pages[0];
+    }
   }
-  // If not connected: leave pages empty; canvas shows the "connect first" placeholder
 
   renderPageList();
 
@@ -132,7 +149,6 @@ export async function enterVisualMode(): Promise<void> {
 // ── Enter code mode ───────────────────────────────────────────────────
 
 export function enterCodeMode(): void {
-  stopMobilePreview(); // Clear mobile preview interval — it runs continuously and wastes resources in code mode
 
   // Open the active page in the code editor.
   //
@@ -420,8 +436,7 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
   // Apply the conversion
   page.blocks        = blocks;
   page.preservedHead = preservedHead;
-  page.dirty         = true;
-  visual.dirty       = true;
+  markVisualDirty();
 
   import('./canvas').then(({ updateVisualSaveBtn, renderCanvas, syncActivePageCodeTab }) => {
     updateVisualSaveBtn();
@@ -440,8 +455,8 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
  * Switch the unified sidebar to show a named panel and mark the matching
  * activity-bar icon as active.  Works in both Visual and Code mode.
  */
-export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'): void {
-  const panels = ['pages', 'explorer', 'search', 'css'] as const;
+export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css' | 'blocks'): void {
+  const panels = ['pages', 'explorer', 'search', 'css', 'blocks'] as const;
   for (const p of panels) {
     const panelEl  = document.getElementById(`panel-${p}`);
     const actIcon  = document.getElementById(`act-${p}`);
@@ -452,9 +467,9 @@ export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'
   }
   // Sync footer tab active states (visual mode only — no-ops if footer is hidden)
   const tabMap: Partial<Record<string, string>> = {
-    pages: 'vis-pages-tab', explorer: 'vis-files-tab', css: 'vis-css-btn',
+    pages: 'vis-pages-tab', explorer: 'vis-files-tab', css: 'vis-css-btn', blocks: 'vis-blocks-tab',
   };
-  ['vis-pages-tab', 'vis-files-tab', 'vis-css-btn'].forEach(id =>
+  ['vis-pages-tab', 'vis-files-tab', 'vis-css-btn', 'vis-blocks-tab'].forEach(id =>
     document.getElementById(id)?.classList.remove('active'),
   );
   const activeTab = tabMap[name];
@@ -462,17 +477,15 @@ export function switchSidebarPanel(name: 'pages' | 'explorer' | 'search' | 'css'
 }
 
 function initToolModeButtons(): void {
-  document.getElementById('tool-inspect')?.addEventListener('click', () => {
-    setInteractMode(false);
-    setInspectMode(true);   // Edit = text editable + element hover outlines
-  });
+  // Preview is a toggle: click once to enter preview, click again to return to edit
   document.getElementById('tool-edit')?.addEventListener('click', () => {
-    setInteractMode(true);  // Preview = live page, normal mouse, no outlines
+    if (getInteractMode()) {
+      setInteractMode(false);
+      setInspectMode(true);
+    } else {
+      setInteractMode(true);
+    }
   });
-}
-
-function initElementsActivityButton(): void {
-  // Elements panel removed from sidebar — blocks added via "+ Add Section" modal
 }
 
 function initCssActivityButton(): void {
@@ -535,6 +548,8 @@ function exposePageAndNavGlobals(): void {
   w._deletePage          = (id: string) => import('./pages').then(m => m.deletePage(id));
   w._openAddPageModal       = openAddPageModal;
   w._confirmAddPage         = confirmAddPage;
+  w._showAddPageForm        = () => { openAddPageModal(); showAddPageForm(); };
+  w._openAssetWizard        = (targetId?: string) => import('./asset-wizard').then(m => m.openAssetWizard(targetId));
   w._selectBlockFromList    = (id: string) => selectBlock(id);
   w._convertPageToBlocks    = convertCurrentPageToBlocks;
   w._showTemplateGallery    = () => import('./templates').then(m => m.showTemplateGallery());
@@ -548,7 +563,12 @@ function exposePageAndNavGlobals(): void {
 // ── Push to GitHub ────────────────────────────────────────────────────
 
 export async function pushVisualChanges(): Promise<void> {
-  if (!state.connected) { notify('Connect a repository before publishing', 'warning'); return; }
+  if (!state.connected) {
+    // Not connected — open settings to let user connect, then they can publish
+    import('../modal').then(m => m.openModal('settings-modal'));
+    notify('Connect a GitHub repository to publish your site', 'info');
+    return;
+  }
 
   const commitMsg =
     (document.getElementById('vis-commit-msg') as HTMLInputElement | null)?.value.trim() ||
@@ -560,6 +580,24 @@ export async function pushVisualChanges(): Promise<void> {
   let pushed = 0;
 
   try {
+    // Upload any images staged locally while working without GitHub.
+    // Uses uploadFile (not writeFile) — base64 is already encoded; writeFile would double-encode.
+    if (visual.pendingUploads.length > 0) {
+      const uploads = [...visual.pendingUploads];
+      const failedUploads: typeof visual.pendingUploads = [];
+      let uploadedCount = 0;
+      for (const item of uploads) {
+        try {
+          await uploadFile(item.path, item.base64, `Add asset ${item.path.split('/').pop() ?? item.path}`, state.fileShas[item.path]);
+          uploadedCount++;
+        } catch {
+          failedUploads.push(item); // keep failures for next publish attempt
+        }
+      }
+      visual.pendingUploads = failedUploads; // only items that failed remain
+      if (uploadedCount > 0) notify(`Uploaded ${uploadedCount} staged asset${uploadedCount !== 1 ? 's' : ''}`, 'info');
+    }
+
     const stateJson   = JSON.stringify(toVisualProjectState(), null, 2);
     const stateKey    = '.wb/state.json';
     const stateResult = await writeFile(stateKey, stateJson, `${commitMsg} [state]`, state.fileShas[stateKey]);
@@ -612,7 +650,8 @@ export async function pushVisualChanges(): Promise<void> {
 
 export function openVisualCommitModal(): void {
   if (!state.connected) {
-    notify('Connect a repository before publishing', 'warning');
+    import('../modal').then(m => m.openModal('settings-modal'));
+    notify('Connect a GitHub repository to publish your site', 'info');
     return;
   }
   const dirty = visual.pages.filter(p => p.dirty !== false);

@@ -6,6 +6,7 @@
 
 import type { NavLink, Theme } from '../types';
 import type { ExtractedTable } from './doc-extract';
+import { shortNavLabel, stripMd } from '../utils';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -268,6 +269,14 @@ function profileSection(sec: ContentSection, docProfile: DocumentProfile): Secti
     leadParagraphs, bodyParagraphs, isClosing };
 }
 
+/** Join paragraphs, trimming any that start with continuation punctuation (, ; : — ). */
+function joinParas(paras: string[]): string {
+  return paras
+    .map(p => p.replace(/^[,;:—–\s]+/, '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /**
  * Emit 1–3 blocks for a single section based on its density profile.
  * Replaces the flat split/text fallback for sections not handled by intent routing.
@@ -303,8 +312,8 @@ function adaptiveSectionBlocks(
     const cards = sec.subSections.slice(0, 3);
     const cardPrefill: BlockPrefill = { 'content.sectionTitle': '' };
     cards.forEach((ss, i) => {
-      cardPrefill[`content.card${i + 1}Title`] = ss.heading;
-      cardPrefill[`content.card${i + 1}Desc`]  = (ss.paragraphs[0] ?? '').slice(0, 150);
+      cardPrefill[`content.card${i + 1}Title`] = stripMd(ss.heading);
+      cardPrefill[`content.card${i + 1}Desc`]  = stripMd(ss.paragraphs[0] ?? '').slice(0, 160);
     });
     out.push({ type: 'features', prefill: cardPrefill, sectionTitle: sec.heading });
     if (profile.hasOwnStats) {
@@ -351,19 +360,19 @@ function adaptiveSectionBlocks(
       type: 'split',
       prefill: {
         ...bgPrefill,
-        'content.headline':    sec.heading,
-        'content.body':        sec.paragraphs.join('\n\n'),
-        'content.imageUrl':    `assets/${img.filename}`,
-        'content.imageAlt':    sec.heading,
-        'content.cta':         '',
-        'settings.imageRight': imageRight,
+        'content.heading':  sec.heading,
+        'content.body':     joinParas(sec.paragraphs),
+        'content.imageUrl': `assets/${img.filename}`,
+        'content.imageAlt': sec.heading,
+        'content.showBtn':  false,
+        'settings.side':    imageRight ? 'right' : 'left',
       },
       sectionTitle: sec.heading, sectionId: id,
     }];
   }
   return [{
     type: 'text',
-    prefill: { ...bgPrefill, 'content.heading': sec.heading, 'content.body': sec.paragraphs.join('\n\n') },
+    prefill: { ...bgPrefill, 'content.heading': sec.heading, 'content.body': joinParas(sec.paragraphs) },
     sectionTitle: sec.heading, sectionId: id,
   }];
 }
@@ -420,14 +429,6 @@ export function analyzeContent(
 
 /** Strip markdown bold/italic markers and heading prefixes from a string.
  *  Used for short UI labels (logo, copyright) where raw ** looks broken. */
-function stripMd(s: string): string {
-  return s
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/\*{1,3}([^*]+)\*{1,3}/g, '$1')
-    .replace(/\*+/g, '')
-    .trim();
-}
-
 // ── Section Intent Classification ─────────────────────────────────────────────
 
 interface IntentRule {
@@ -575,9 +576,9 @@ function classifyTable(
         type: 'features',
         prefill: {
           'content.sectionTitle': offset === 0 ? (hasHeader ? rows[0][0] ?? 'Features' : 'Features') : 'Features (cont.)',
-          'content.card1Title': c1?.title ?? '', 'content.card1Desc': c1?.body ?? '',
-          'content.card2Title': c2?.title ?? '', 'content.card2Desc': c2?.body ?? '',
-          'content.card3Title': c3?.title ?? '', 'content.card3Desc': c3?.body ?? '',
+          'content.card1Title': stripMd(c1?.title ?? ''), 'content.card1Desc': stripMd(c1?.body ?? '').slice(0, 160),
+          'content.card2Title': stripMd(c2?.title ?? ''), 'content.card2Desc': stripMd(c2?.body ?? '').slice(0, 160),
+          'content.card3Title': stripMd(c3?.title ?? ''), 'content.card3Desc': stripMd(c3?.body ?? '').slice(0, 160),
           'content.columns': Math.min(chunk.length, 3),
         },
       });
@@ -634,11 +635,13 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
     if (idx !== -1) remainingImages.splice(idx, 1);
   }
   const heroPrefill: BlockPrefill = {
-    'content.headline': map.pageTitle,
-    'content.subhead':  map.heroParagraph || 'Welcome — explore our work and get in touch.',
-    'content.cta':      'Learn More',
-    'content.ctaHref':  '#about',
-    'settings.bgType':  heroImage ? 'image' : 'gradient',
+    'content.heading':    map.pageTitle,
+    'content.subheading': map.heroParagraph || 'Welcome — explore our work and get in touch.',
+    'content.btn1Text':   'Learn More',
+    'content.btn1Link':   '#about',
+    'content.btn2Text':   'View Work',
+    'content.btn2Link':   '#work',
+    'settings.bgType':    heroImage ? 'image' : 'gradient',
   };
   if (heroImage) {
     heroPrefill['settings.bgImage'] = `assets/${heroImage.filename}`;
@@ -679,10 +682,10 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
       const item = group[0];
       const img = remainingImages.shift();
       const prefill: BlockPrefill = {
-        'content.headline': item.label,
+        'content.heading':  item.label,
         'content.body':     item.body,
         'content.imageAlt': item.label,
-        'content.cta':      '',
+        'content.showBtn':  false,
       };
       if (img) prefill['content.imageUrl'] = `assets/${img.filename}`;
       orphanLabeledSplits.push({
@@ -726,13 +729,13 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
       blocks.push({
         type: 'features',
         prefill: {
-          'content.headline': offset === 0 ? src.heading : `${src.heading} (cont.)`,
-          'content.col1Title': c1?.title ?? '',
-          'content.col1Body':  c1?.body  ?? '',
-          'content.col2Title': c2?.title ?? '',
-          'content.col2Body':  c2?.body  ?? '',
-          'content.col3Title': c3?.title ?? '',
-          'content.col3Body':  c3?.body  ?? '',
+          'content.sectionTitle': offset === 0 ? src.heading : `${src.heading} (cont.)`,
+          'content.card1Title': stripMd(c1?.title ?? ''),
+          'content.card1Desc':  stripMd(c1?.body  ?? '').slice(0, 160),
+          'content.card2Title': stripMd(c2?.title ?? ''),
+          'content.card2Desc':  stripMd(c2?.body  ?? '').slice(0, 160),
+          'content.card3Title': stripMd(c3?.title ?? ''),
+          'content.card3Desc':  stripMd(c3?.body  ?? '').slice(0, 160),
         },
         sectionTitle: src.heading,
       });
@@ -765,7 +768,7 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
 
   for (const { sec, origIdx } of textSectionEntries) {
     const intent = classifySectionIntent(sec.heading);
-    const body = sec.paragraphs.join('\n\n');
+    const body = joinParas(sec.paragraphs);
     consumedSectionIndices.add(origIdx);
 
     // If intent already emitted, fall through to default split/text
@@ -793,13 +796,13 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
             blocks.push({
               type: 'features',
               prefill: {
-                'content.headline': sec.heading,
-                'content.col1Title': c1?.title ?? '',
-                'content.col1Body':  c1?.body  ?? '',
-                'content.col2Title': c2?.title ?? '',
-                'content.col2Body':  c2?.body  ?? '',
-                'content.col3Title': c3?.title ?? '',
-                'content.col3Body':  c3?.body  ?? '',
+                'content.sectionTitle': sec.heading,
+                'content.card1Title': stripMd(c1?.title ?? ''),
+                'content.card1Desc':  stripMd(c1?.body  ?? '').slice(0, 160),
+                'content.card2Title': stripMd(c2?.title ?? ''),
+                'content.card2Desc':  stripMd(c2?.body  ?? '').slice(0, 160),
+                'content.card3Title': stripMd(c3?.title ?? ''),
+                'content.card3Desc':  stripMd(c3?.body  ?? '').slice(0, 160),
               },
               sectionTitle: sec.heading,
             });
@@ -904,20 +907,20 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
           blocks.push({
             type: 'split',
             prefill: {
-              'content.headline':    sec.heading,
-              'content.body':        body,
-              'content.imageUrl':    `assets/${img.filename}`,
-              'content.imageAlt':    sec.heading,
-              'content.cta':         '',
-              'settings.imageRight': true,
+              'content.heading':  sec.heading,
+              'content.body':     body,
+              'content.imageUrl': `assets/${img.filename}`,
+              'content.imageAlt': sec.heading,
+              'content.showBtn':  false,
+              'settings.side':    'right',
             },
           });
         } else {
           blocks.push({
             type: 'text',
             prefill: {
-              'content.headline': sec.heading,
-              'content.body':     body,
+              'content.heading': sec.heading,
+              'content.body':    body,
             },
           });
         }
@@ -961,8 +964,8 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
     // Orphan stat: weave into hero subtitle or first text block body
     const statStr = `${map.stats[0].value} ${map.stats[0].label}`;
     const heroBlock = blocks.find(b => b.type === 'hero');
-    if (heroBlock && heroBlock.prefill['content.subhead']) {
-      heroBlock.prefill['content.subhead'] = `${String(heroBlock.prefill['content.subhead'])} \u2014 ${statStr}`;
+    if (heroBlock && heroBlock.prefill['content.subheading']) {
+      heroBlock.prefill['content.subheading'] = `${String(heroBlock.prefill['content.subheading'])} \u2014 ${statStr}`;
     } else {
       const textBlock = blocks.find(b => b.type === 'text');
       if (textBlock && textBlock.prefill['content.body']) {
@@ -1001,7 +1004,7 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
   // ── gallery (remaining images, 3–6) ──────────────────────────────────────
   if (remainingImages.length >= 3) {
     const galleryImgs = remainingImages.splice(0, 6);
-    const gPrefill: BlockPrefill = { 'content.headline': 'Gallery' };
+    const gPrefill: BlockPrefill = { 'content.heading': 'Gallery' };
     galleryImgs.forEach((img, i) => {
       gPrefill[`content.img${i + 1}`] = `assets/${img.filename}`;
       gPrefill[`content.alt${i + 1}`] = img.filename.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
@@ -1070,7 +1073,7 @@ export function assembleBlocks(map: ContentMap, theme?: Theme): AssembledBlock[]
   );
   if (anchorBlocks.length > 0) {
     const anchorLinks: NavLink[] = anchorBlocks.slice(0, 6).map(b => ({
-      text: b.sectionTitle ?? b.sectionId!,
+      text: shortNavLabel(stripMd(b.sectionTitle ?? b.sectionId!)),
       href: `#${b.sectionId}`,
     }));
     const navBlock = blocks[0];
@@ -1184,11 +1187,18 @@ function detectSections(lines: string[], _title: string): ContentSection[] {
     const isH3   = /^#{3}\s+\S/.test(line);
 
     if (isH1H2) {
-      // Push current sub-section and section, start new H2 section
-      pushSub();
-      if (current) sections.push(current);
-      const depth = /^#\s/.test(line) ? 1 : 2;
-      current = makeSection(line.replace(/^#+\s*/, '').trim(), depth as 1 | 2);
+      const headingText = line.replace(/^#+\s*/, '').trim();
+      // Guard: a heading > 120 chars is a mis-styled body paragraph — treat as text
+      if (headingText.length > 120) {
+        if (!current) current = makeSection('Overview');
+        current.paragraphs.push(headingText);
+      } else {
+        // Push current sub-section and section, start new H2 section
+        pushSub();
+        if (current) sections.push(current);
+        const depth = /^#\s/.test(line) ? 1 : 2;
+        current = makeSection(headingText, depth as 1 | 2);
+      }
 
     } else if (isH3) {
       // Start new sub-section within current H2 section

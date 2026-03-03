@@ -376,10 +376,19 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     }
 
     // ── Official heading style → straightforward ─────────────────────────────
+    // Guard: if the "heading" is longer than 120 chars the paragraph was
+    // mis-styled in Word (e.g. a full body paragraph accidentally formatted
+    // as Heading 2).  Treat it as regular body text to avoid it becoming a
+    // section heading / block heading in the visual output.
     if (isH1 || isH2 || isH3orH4) {
       const plain = validSegs.flatMap(s => s).map(r => r.text).join('').trim();
-      const prefix = isH1 ? '#' : isH2 ? '##' : '###';
-      metas.push({ lines: [`${prefix} ${plain}`], isSubtitle: false, hasBreak });
+      if (plain.length <= 120) {
+        const prefix = isH1 ? '#' : isH2 ? '##' : '###';
+        metas.push({ lines: [`${prefix} ${plain}`], isSubtitle: false, hasBreak });
+      } else {
+        // Too long to be a heading — emit as body text, preserving inline formatting
+        metas.push({ lines: [fmtRuns(validSegs.flatMap(s => s))], isSubtitle: false, hasBreak });
+      }
       continue;
     }
 

@@ -1,6 +1,6 @@
-import { visual, state, DEFAULT_THEME } from '../state';
+import { visual, state, DEFAULT_THEME, markVisualDirty } from '../state';
 import { BLOCK_DEFS } from './blocks';
-import { updateBlockValue, rerenderBlock, syncActivePageCodeTab, getDmSelected, dmSetInlineStyle, dmHighlightSection, dmSetCssLive, previewBlockAnimation } from './canvas';
+import { coordinator } from './visual-coordinator';
 import type { SelectedElement, BreadcrumbItem } from './canvas';
 import { escapeHtml, debounce } from '../utils';
 import type { NavLink, Theme } from '../types';
@@ -138,63 +138,79 @@ function animationSection(block: import('../types').Block): string {
 
 // ── Properties Panel ──────────────────────────────────────────────────
 
+// ── Properties panel tab state ────────────────────────────────────────
+let _propsTab: 'block' | 'design' = 'design';
+
 export function renderProperties(): void {
   const panel = document.getElementById('vis-props') as HTMLElement;
   if (!panel) return;
 
-  if (!state.connected) {
-    panel.innerHTML = `
-      <div class="pp-block-header"><span class="pp-block-type">Properties</span></div>
-      <div style="padding:32px 14px;text-align:center;color:var(--text-dim);font-size:12px;line-height:1.8">
-        Connect a repository to start editing.
-      </div>`;
-    return;
-  }
-
-  // Raw HTML page (no blocks) → show the DOM inspector
+  // Raw HTML page (no blocks) → show the DOM inspector (no tabs)
   const activePage = visual.activePage;
   if (activePage && activePage.blocks.length === 0) {
-    const dmSel = getDmSelected();
+    const dmSel = (coordinator.getDmSelected?.() ?? null) as SelectedElement | null;
     panel.innerHTML = dmSel ? renderDmInspectorPanel(dmSel) : renderDmEmptyPanel();
     bindDmPanelEvents(panel);
     return;
   }
 
-  // Theme panel always visible at top
-  let html = renderThemePanel();
-
-  // Block-specific panel below when a block is selected
+  // Auto-manage tab: switch to Block when a block is selected, back to Design when nothing is
   const block = visual.selectedBlockId && visual.activePage
     ? visual.activePage.blocks.find(b => b.id === visual.selectedBlockId)
     : null;
-  if (block) {
-    const def = BLOCK_DEFS[block.type];
-    html += `
-      <div class="pp-section-divider"></div>
-      <div class="pp-section" id="vis-block-panel">
-        <div class="pp-block-header pp-collapsible">
+  if (block) _propsTab = 'block';
+  else if (_propsTab === 'block') _propsTab = 'design'; // no block selected — return to Design
+
+  // Tab bar
+  const tabBar = `<div class="pp-tabs">
+    <button class="pp-tab${_propsTab === 'block'  ? ' active' : ''}" data-props-tab="block">Block</button>
+    <button class="pp-tab${_propsTab === 'design' ? ' active' : ''}" data-props-tab="design">Design</button>
+  </div>`;
+
+  let content = '';
+
+  if (_propsTab === 'design') {
+    content = renderThemePanel();
+  } else {
+    // Block tab
+    if (block) {
+      const def = BLOCK_DEFS[block.type];
+      content = `<div class="pp-section" id="vis-block-panel">
+        <div class="pp-block-header">
           <span class="pp-block-type">${def?.name ?? block.type}</span>
-          ${CHEVRON_SVG}
         </div>
         <div class="pp-section-body">
           ${def?.settingsPanel(block) ?? ''}
           ${block.type === 'nav' ? renderNavLinksEditor(block.id, block.content.links as NavLink[]) : ''}
           ${animationSection(block)}
         </div>
-      </div>
-    `;
+      </div>`;
+    } else {
+      content = `<div style="padding:40px 14px;text-align:center;color:var(--text-dim);font-size:12px;line-height:1.8">
+        Click any section on the canvas to edit its settings here.
+      </div>`;
+    }
   }
 
-  panel.innerHTML = html;
-  bindThemePanelEvents(panel);
-  initCollapseSections(panel);
+  panel.innerHTML = tabBar + content;
 
-  // Scope block-panel events to its own container so .pp-link-btn and [data-key]
-  // selectors don't accidentally match theme panel elements.
-  const blockPanelEl = panel.querySelector<HTMLElement>('#vis-block-panel');
-  if (blockPanelEl && block) {
-    injectLinkIcons(blockPanelEl, block);
-    bindPanelEvents(blockPanelEl);
+  // Bind tab-switch clicks
+  panel.querySelectorAll<HTMLElement>('[data-props-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _propsTab = btn.dataset.propsTab as 'block' | 'design';
+      renderProperties();
+    });
+  });
+
+  if (_propsTab === 'design') {
+    bindThemePanelEvents(panel);
+    initCollapseSections(panel);
+  } else {
+    const blockPanelEl = panel.querySelector<HTMLElement>('#vis-block-panel');
+    if (blockPanelEl && block) {
+      injectLinkIcons(blockPanelEl, block);
+      bindPanelEvents(blockPanelEl);
+    }
   }
 }
 
@@ -313,8 +329,7 @@ function bindPanelEvents(panel: HTMLElement): void {
         btn.title = 'Unlinked from theme — Looks won\'t change this';
         btn.innerHTML = UNLINK_ICON;
       }
-      visual.dirty = true;
-      if (visual.activePage) visual.activePage.dirty = true;
+      markVisualDirty();
     });
   });
 
@@ -327,8 +342,7 @@ function bindPanelEvents(panel: HTMLElement): void {
     if (!block.unlinked) block.unlinked = [];
     if (!block.unlinked.includes(key)) {
       block.unlinked.push(key);
-      visual.dirty = true;
-      if (visual.activePage) visual.activePage.dirty = true;
+      markVisualDirty();
     }
     const btn = input.closest('.pp-row')?.querySelector<HTMLElement>('.pp-link-btn');
     if (btn) {
@@ -341,7 +355,7 @@ function bindPanelEvents(panel: HTMLElement): void {
   // Color pickers
   panel.querySelectorAll<HTMLInputElement>('.pp-color[data-key]').forEach(input => {
     input.addEventListener('input', () => {
-      updateBlockValue(blockId, input.dataset.key!, input.value);
+      coordinator.updateBlockValue?.(blockId, input.dataset.key!, input.value);
       autoUnlinkInput(input);
     });
   });
@@ -350,7 +364,7 @@ function bindPanelEvents(panel: HTMLElement): void {
   panel.querySelectorAll<HTMLSelectElement>('.pp-select[data-key]').forEach(sel => {
     sel.addEventListener('change', () => {
       const val = isNaN(Number(sel.value)) ? sel.value : Number(sel.value);
-      updateBlockValue(blockId, sel.dataset.key!, val);
+      coordinator.updateBlockValue?.(blockId, sel.dataset.key!, val);
     });
   });
 
@@ -359,7 +373,7 @@ function bindPanelEvents(panel: HTMLElement): void {
     '.pp-input[data-key]:not(.pp-html-editor)',
   ).forEach(input => {
     input.addEventListener('change', () => {
-      updateBlockValue(blockId, input.dataset.key!, input.value);
+      coordinator.updateBlockValue?.(blockId, input.dataset.key!, input.value);
       autoUnlinkInput(input);
     });
   });
@@ -367,19 +381,19 @@ function bindPanelEvents(panel: HTMLElement): void {
   // HTML editor textarea — debounced live preview as user types
   panel.querySelectorAll<HTMLTextAreaElement>('.pp-html-editor[data-key]').forEach(ta => {
     ta.addEventListener('change', () => {
-      updateBlockValue(blockId, ta.dataset.key!, ta.value);
+      coordinator.updateBlockValue?.(blockId, ta.dataset.key!, ta.value);
     });
     let _t: ReturnType<typeof setTimeout> | null = null;
     ta.addEventListener('input', () => {
       if (_t) clearTimeout(_t);
-      _t = setTimeout(() => { _t = null; updateBlockValue(blockId, ta.dataset.key!, ta.value); }, 400);
+      _t = setTimeout(() => { _t = null; coordinator.updateBlockValue?.(blockId, ta.dataset.key!, ta.value); }, 400);
     });
   });
 
   // Checkboxes (toggles)
   panel.querySelectorAll<HTMLInputElement>('.pp-toggle input[data-key]').forEach(cb => {
     cb.addEventListener('change', () => {
-      updateBlockValue(blockId, cb.dataset.key!, cb.checked);
+      coordinator.updateBlockValue?.(blockId, cb.dataset.key!, cb.checked);
     });
   });
 
@@ -389,7 +403,7 @@ function bindPanelEvents(panel: HTMLElement): void {
       const key = btn.dataset.key!;
       const raw = btn.dataset.val!;
       const val = isNaN(Number(raw)) ? raw : Number(raw);
-      updateBlockValue(blockId, key, val);
+      coordinator.updateBlockValue?.(blockId, key, val);
       // Update active state
       btn.closest('.pp-seg')?.querySelectorAll('.pp-seg-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -399,7 +413,7 @@ function bindPanelEvents(panel: HTMLElement): void {
   // Range inputs
   panel.querySelectorAll<HTMLInputElement>('.pp-range[data-key]').forEach(range => {
     range.addEventListener('input', () => {
-      updateBlockValue(blockId, range.dataset.key!, Number(range.value));
+      coordinator.updateBlockValue?.(blockId, range.dataset.key!, Number(range.value));
     });
   });
 
@@ -416,8 +430,8 @@ function bindPanelEvents(panel: HTMLElement): void {
         links[idx][field as keyof NavLink] = input.value;
         visual.dirty = true;
         if (visual.activePage) visual.activePage.dirty = true;
-        import('./canvas').then(({ updateVisualSaveBtn }) => updateVisualSaveBtn());
-        rerenderBlock(bid);
+        coordinator.updateVisualSaveBtn?.();
+        coordinator.rerenderBlock?.(bid);
       }
     });
   });
@@ -450,7 +464,7 @@ function bindPanelEvents(panel: HTMLElement): void {
 
   function triggerPreview() {
     const s = getAnimSettings();
-    if (s.animIn !== 'none') previewBlockAnimation(blockId!, s.animIn, s.duration, s.delay, s.ease);
+    if (s.animIn !== 'none') coordinator.previewBlockAnimation?.(blockId!, s.animIn, s.duration, s.delay, s.ease);
   }
 
   if (animInSel && animTiming) {
@@ -531,7 +545,7 @@ function bindThemePanelEvents(panel: HTMLElement): void {
   panel.querySelector<HTMLInputElement>('#pp-site-name')?.addEventListener('change', function () {
     visual.siteName = this.value;
     visual.dirty = true;
-    import('./canvas').then(({ updateVisualSaveBtn }) => updateVisualSaveBtn());
+    coordinator.updateVisualSaveBtn?.();
   });
 
   // ── Font selects ──────────────────────────────────────────────────
@@ -561,14 +575,14 @@ function bindThemePanelEvents(panel: HTMLElement): void {
 // Debounced: dragging a color slider fires this continuously;
 // wait 150 ms after the last change before re-rendering the iframe.
 const debouncedThemeRender = debounce(() => {
-  import('./canvas').then(({ applyThemeToCanvas, renderCanvas, updateVisualSaveBtn }) => {
-    // Sync the code tab BEFORE re-rendering so renderBlockPage's hasManualEdits
-    // check sees the updated (new-theme) HTML, not the old one.
-    syncActivePageCodeTab();
-    applyThemeToCanvas();
-    renderCanvas();
-    updateVisualSaveBtn();
-  });
+  // Sync the code tab BEFORE re-rendering so renderBlockPage's hasManualEdits
+  // check sees the updated (new-theme) HTML, not the old one.
+  coordinator.syncActivePageCodeTab?.();
+  // Push new theme values into every block's linked settings so render() picks them up.
+  propagateThemeColors(visual.theme);
+  coordinator.applyThemeToCanvas?.();
+  coordinator.renderCanvas?.();
+  coordinator.updateVisualSaveBtn?.();
 }, 150);
 
 function onThemeChange(): void {
@@ -1095,7 +1109,7 @@ function applyLook(lookId: string): void {
 
   // Single live-inject after all changes
   dmCssVars = parseCssVariables(dmCssContent);
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
   syncVarTimer();
   const dirtyEl = _sidebarCssContainer?.querySelector<HTMLElement>('#dm-css-dirty');
   if (dirtyEl) dirtyEl.style.display = 'inline';
@@ -1129,7 +1143,7 @@ function applyFontPair(heading: string, body: string): void {
     addVariable('font', '--font-body', bodyVal, false);
   }
   dmCssVars = parseCssVariables(dmCssContent);
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
 }
 
 // ── Color Palette Generator ───────────────────────────────────────────
@@ -1387,7 +1401,8 @@ function syncVarTimer(): void {
     const tab = state.openTabs.find(t => t.path === dmCssPath);
     if (tab) { tab.content = dmCssContent; tab.dirty = true; }
     import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
-    import('./canvas').then(({ updateVisualSaveBtn }) => { visual.dirty = true; updateVisualSaveBtn(); });
+    visual.dirty = true;
+    coordinator.updateVisualSaveBtn?.();
   }, 500);
 }
 
@@ -1400,7 +1415,7 @@ function applyVarChange(idx: number, newVal: string, isDark: boolean): void {
   dmCssContent = updateCssVariableInContent(dmCssContent, variable.name, oldVal, newVal, isDark);
   const dirtyEl = _sidebarCssContainer?.querySelector<HTMLElement>('#dm-css-dirty');
   if (dirtyEl) dirtyEl.style.display = 'inline';
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
   syncVarTimer();
 }
 
@@ -1447,7 +1462,7 @@ function addVariable(type: CssVarType, suggestedName?: string, suggestedValue?: 
   }
   // Re-parse to ensure dmCssVars stays consistent with dmCssContent
   dmCssVars = parseCssVariables(dmCssContent);
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
   syncVarTimer();
 }
 
@@ -1457,7 +1472,7 @@ function addDarkModeToCSS(): void {
   dmCssVars = parseCssVariables(dmCssContent);
   // Automatically switch to the dark tab so the user sees what was just created
   dmCssVarsDark = true;
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
   syncVarTimer();
 }
 
@@ -1787,7 +1802,7 @@ function renderDmInspectorPanel(sel: SelectedElement): string {
 
 function bindDmPanelEvents(panel: HTMLElement): void {
 
-  const selected = getDmSelected();
+  const selected = (coordinator.getDmSelected?.() ?? null) as SelectedElement | null;
   if (!selected) return;
   const selector = selected.selector;
 
@@ -1798,7 +1813,7 @@ function bindDmPanelEvents(panel: HTMLElement): void {
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        dmSetInlineStyle(selector, input.dataset.dmProp!, input.value);
+        coordinator.dmSetInlineStyle?.(selector, input.dataset.dmProp!, input.value);
       });
     });
   });
@@ -1807,7 +1822,7 @@ function bindDmPanelEvents(panel: HTMLElement): void {
   panel.querySelectorAll<HTMLInputElement>('.dm-style-input[type="number"]').forEach(input => {
     input.addEventListener('change', () => {
       const val = input.dataset.unit === 'px' ? `${input.value}px` : input.value;
-      dmSetInlineStyle(selector, input.dataset.dmProp!, val);
+      coordinator.dmSetInlineStyle?.(selector, input.dataset.dmProp!, val);
     });
   });
 
@@ -1815,14 +1830,14 @@ function bindDmPanelEvents(panel: HTMLElement): void {
   panel.querySelectorAll<HTMLInputElement>('.dm-style-input[type="text"]').forEach(input => {
     input.addEventListener('change', () => {
       const val = input.dataset.unit === 'px' && input.value !== '' ? `${input.value}px` : input.value;
-      dmSetInlineStyle(selector, input.dataset.dmProp!, val);
+      coordinator.dmSetInlineStyle?.(selector, input.dataset.dmProp!, val);
     });
   });
 
   // Select inputs
   panel.querySelectorAll<HTMLSelectElement>('select.dm-style-input').forEach(sel => {
     sel.addEventListener('change', () => {
-      dmSetInlineStyle(selector, sel.dataset.dmProp!, sel.value);
+      coordinator.dmSetInlineStyle?.(selector, sel.dataset.dmProp!, sel.value);
     });
   });
 
@@ -1831,7 +1846,7 @@ function bindDmPanelEvents(panel: HTMLElement): void {
   const radiusVal   = panel.querySelector<HTMLElement>('#dm-radius-val');
   radiusRange?.addEventListener('input', () => {
     if (radiusVal) radiusVal.textContent = radiusRange.value;
-    dmSetInlineStyle(selector, 'border-radius', `${radiusRange.value}px`);
+    coordinator.dmSetInlineStyle?.(selector, 'border-radius', `${radiusRange.value}px`);
   });
 
   // Display segmented buttons
@@ -1839,7 +1854,7 @@ function bindDmPanelEvents(panel: HTMLElement): void {
     btn.addEventListener('click', () => {
       panel.querySelectorAll<HTMLButtonElement>('.dm-display-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      dmSetInlineStyle(selector, 'display', btn.dataset.val!);
+      coordinator.dmSetInlineStyle?.(selector, 'display', btn.dataset.val!);
     });
   });
 
@@ -1848,7 +1863,7 @@ function bindDmPanelEvents(panel: HTMLElement): void {
     chip.addEventListener('click', () => {
       const sel2 = chip.dataset.sel!;
       if (sel2 === 'body') return;
-      dmHighlightSection(sel2);
+      coordinator.dmHighlightSection?.(sel2);
     });
   });
 }
@@ -2236,8 +2251,9 @@ function _applyConvertedCss(path: string, css: string): void {
     state.tree.push({ path, type: 'blob', sha: '' });
   }
 
-  dmSetCssLive(css);
-  import('./canvas').then(({ updateVisualSaveBtn }) => { visual.dirty = true; updateVisualSaveBtn(); });
+  coordinator.dmSetCssLive?.(css);
+  visual.dirty = true;
+  coordinator.updateVisualSaveBtn?.();
 }
 
 function bindCssPanelEvents(cp: HTMLElement, navigateFn: () => void): void {
@@ -2483,14 +2499,15 @@ function applyCssPropChange(ri: number, pi: number, newVal: string, cssPanel: HT
   dmCssContent = updateCssValue(dmCssContent, rule.selector, entry.prop, oldVal, newVal);
   const dirtyEl = cssPanel.querySelector<HTMLElement>('#dm-css-dirty');
   if (dirtyEl) dirtyEl.style.display = 'inline';
-  dmSetCssLive(dmCssContent);
+  coordinator.dmSetCssLive?.(dmCssContent);
   if (dmCssTimer) clearTimeout(dmCssTimer);
   dmCssTimer = setTimeout(() => {
     if (!dmCssPath) return;
     const tab = state.openTabs.find(t => t.path === dmCssPath);
     if (tab) { tab.content = dmCssContent; tab.dirty = true; }
     import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
-    import('./canvas').then(({ updateVisualSaveBtn }) => { visual.dirty = true; updateVisualSaveBtn(); });
+    visual.dirty = true;
+    coordinator.updateVisualSaveBtn?.();
   }, 500);
 }
 
@@ -2518,7 +2535,7 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
       dmCssContent = restoredContent;
       dmCssParsed  = parseCss(restoredContent);
       dmCssVars    = parseCssVariables(restoredContent);
-      dmSetCssLive(restoredContent);
+      coordinator.dmSetCssLive?.(restoredContent);
       // Sync code tab
       const tab = state.openTabs.find(t => t.path === dmCssPath);
       if (tab) { tab.content = restoredContent; tab.dirty = true; }
@@ -2573,4 +2590,11 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
   dmCssVarsDark   = false;
   dmCssInitialized = true;
   _renderSidebarCss();
+}
+
+// ── Coordinator registration ───────────────────────────────────────────
+// Called once from visual/index.ts init block to populate coordinator slots.
+
+export function registerPropertiesCallbacks(): void {
+  coordinator.renderProperties = renderProperties;
 }

@@ -7,96 +7,17 @@ import { detectLanguage, escapeHtml, escapeAttr, fileIconSvg, cacheTreeShas } fr
 import { markUnsaved, debounceAutoSave } from './draft';
 import { cacheFileInSW } from './preview-sw-client';
 import type { Tab } from './types';
+import {
+  isPreviewable, loadPreviewBlobUrl,
+  showSidebarPreview, hideSidebarPreview, getSidebarPreviewPath,
+} from './file-preview';
+import {
+  renderTree, collapseAll, refreshTree, updateTreeSelection,
+} from './file-tree';
 
-// ── Previewable file detection ────────────────────────────────────────
-const PREVIEW_IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','svg','webp','ico','avif','bmp']);
-const PREVIEW_VIDEO_EXTS = new Set(['mp4','webm','ogv','mov']);
-const PREVIEW_AUDIO_EXTS = new Set(['mp3','wav','ogg','flac','m4a']);
-
-/** Returns 'image', 'video', 'audio', or null */
-export function isPreviewable(path: string): 'image' | 'video' | 'audio' | null {
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  if (PREVIEW_IMAGE_EXTS.has(ext)) return 'image';
-  if (PREVIEW_VIDEO_EXTS.has(ext)) return 'video';
-  if (PREVIEW_AUDIO_EXTS.has(ext)) return 'audio';
-  return null;
-}
-
-const PREVIEW_MIME: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-  svg: 'image/svg+xml', webp: 'image/webp', ico: 'image/x-icon',
-  avif: 'image/avif', bmp: 'image/bmp',
-  mp4: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg', mov: 'video/quicktime',
-  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4',
-};
-
-/** Track blob URLs so we can revoke old ones and avoid leaks. */
-const _previewBlobUrls = new Map<string, string>();
-
-/** Dedup in-flight blob loads — prevents concurrent loads for the same path
- *  from revoking each other's blob URLs mid-load. */
-const _previewLoading = new Map<string, Promise<string>>();
-
-/**
- * Load a binary file from IDB cache or GitHub API and return a blob: URL
- * suitable for <img>/<video>/<audio> src in the main page.
- * Deduplicates concurrent calls for the same path.
- */
-export async function loadPreviewBlobUrl(path: string): Promise<string> {
-  const inflight = _previewLoading.get(path);
-  if (inflight) return inflight;
-
-  const promise = _loadPreviewBlobUrlInner(path).finally(() => {
-    _previewLoading.delete(path);
-  });
-  _previewLoading.set(path, promise);
-  return promise;
-}
-
-async function _loadPreviewBlobUrlInner(path: string): Promise<string> {
-  // Revoke previous blob URL for this path
-  const prev = _previewBlobUrls.get(path);
-  if (prev) URL.revokeObjectURL(prev);
-
-  const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  const mime = PREVIEW_MIME[ext] ?? 'application/octet-stream';
-
-  // 0. Local import with base64 content already in memory — no fetch needed
-  const localTab = state.openTabs.find(t => t.path === path && t.isBinary && t.isLocalImport);
-  if (localTab) {
-    const bytes = Uint8Array.from(atob(localTab.content), c => c.charCodeAt(0));
-    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
-    _previewBlobUrls.set(path, url);
-    return url;
-  }
-
-  // 1. Try IndexedDB cache (background sync likely already cached it)
-  try {
-    const { getCachedFile } = await import('./repo-cache');
-    const cached = await getCachedFile(state.owner, state.repo, state.branch, path);
-    if (cached?.content != null) {
-      // Text files (SVG, etc.) are stored as UTF-8 strings — use TextEncoder
-      // to preserve multi-byte characters. Binary files were decoded with
-      // atob() and are safe for charCodeAt-based conversion.
-      const bytes = cached.isText
-        ? new TextEncoder().encode(cached.content)
-        : Uint8Array.from(cached.content, c => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
-      _previewBlobUrls.set(path, url);
-      return url;
-    }
-  } catch { /* IDB unavailable */ }
-
-  // 2. Fetch raw binary from GitHub API
-  const res = await fetch(
-    `https://api.github.com/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}?ref=${state.branch}`,
-    { headers: { Authorization: `Bearer ${state.token}`, Accept: 'application/vnd.github.raw+json' } },
-  );
-  if (!res.ok) throw new Error(`Failed to load ${path}: ${res.status}`);
-  const url = URL.createObjectURL(new Blob([await res.arrayBuffer()], { type: mime }));
-  _previewBlobUrls.set(path, url);
-  return url;
-}
+// Re-export from sub-modules so existing call sites continue to work
+export { renderTree, collapseAll, refreshTree };
+export { isPreviewable, loadPreviewBlobUrl, showSidebarPreview, hideSidebarPreview };
 
 // ── Monaco setup ──────────────────────────────────────────────────────
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
@@ -122,80 +43,11 @@ export function flushSWCacheTimers(): void {
   _swCacheTimers.clear();
 }
 
-const treeOpenDirs = new Set<string>();
-
-// ── Sidebar file preview ──────────────────────────────────────────────
-let _sidebarPreviewPath: string | null = null;
-
-const FILE_TYPE_LABELS: Record<string, string> = {
-  html: 'HTML Document', css: 'CSS Stylesheet', js: 'JavaScript',
-  ts: 'TypeScript', json: 'JSON', md: 'Markdown', svg: 'SVG Image',
-  png: 'PNG Image', jpg: 'JPEG Image', jpeg: 'JPEG Image', gif: 'GIF Image',
-  webp: 'WebP Image', ico: 'Icon', avif: 'AVIF Image', bmp: 'Bitmap Image',
-  mp4: 'MP4 Video', webm: 'WebM Video', ogv: 'Ogg Video', mov: 'QuickTime Video',
-  mp3: 'MP3 Audio', wav: 'WAV Audio', ogg: 'Ogg Audio', flac: 'FLAC Audio',
-  m4a: 'M4A Audio', txt: 'Text File', xml: 'XML Document', yaml: 'YAML',
-  yml: 'YAML', toml: 'TOML', sh: 'Shell Script', py: 'Python',
-};
-
-export function showSidebarPreview(path: string): void {
-  _sidebarPreviewPath = path;
-  const panel = document.getElementById('sidebar-preview')!;
-  const nameEl = document.getElementById('sidebar-preview-name')!;
-  const contentEl = document.getElementById('sidebar-preview-content')!;
-
-  panel.classList.remove('hidden');
-  const fileName = path.split('/').pop() ?? path;
-  nameEl.textContent = fileName;
-
-  // Highlight in tree
-  document.querySelectorAll<HTMLElement>('.tree-item.previewing').forEach(el => el.classList.remove('previewing'));
-  document.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(path)}"]`)?.classList.add('previewing');
-
-  const previewType = isPreviewable(path);
-  if (previewType) {
-    contentEl.innerHTML = '<span style="font-size:11px;color:var(--text-dim)">Loading\u2026</span>';
-    loadPreviewBlobUrl(path).then(blobUrl => {
-      if (_sidebarPreviewPath !== path) return;
-      if (previewType === 'image') {
-        contentEl.innerHTML = `<img src="${blobUrl}" alt="${escapeAttr(fileName)}">`;
-      } else if (previewType === 'video') {
-        contentEl.innerHTML = `<video src="${blobUrl}" controls></video>`;
-      } else {
-        contentEl.innerHTML = `<audio src="${blobUrl}" controls></audio>`;
-      }
-      // Make sidebar preview image/video draggable onto the canvas
-      if (previewType === 'image' || previewType === 'video') {
-        const mediaEl = contentEl.querySelector('img, video') as HTMLElement | null;
-        if (mediaEl) {
-          (mediaEl as HTMLImageElement | HTMLVideoElement).draggable = true;
-          mediaEl.addEventListener('dragstart', (ev) => {
-            (ev as DragEvent).dataTransfer!.setData('application/x-wb-asset', JSON.stringify({ path, type: previewType }));
-            (ev as DragEvent).dataTransfer!.effectAllowed = 'copy';
-          });
-        }
-      }
-    }).catch(() => {
-      if (_sidebarPreviewPath !== path) return;
-      contentEl.innerHTML = `<span style="font-size:11px;color:var(--red)">Failed to load</span>`;
-    });
-  } else {
-    const ext = fileName.split('.').pop()?.toLowerCase() ?? '';
-    const label = FILE_TYPE_LABELS[ext] ?? (ext ? ext.toUpperCase() + ' File' : 'File');
-    contentEl.innerHTML = `<div class="sp-file-info">${fileIconSvg(fileName)}<span>${escapeHtml(fileName)}</span><span class="sp-file-type">${escapeHtml(label)}</span></div>`;
-  }
-}
-
-export function hideSidebarPreview(): void {
-  document.getElementById('sidebar-preview')!.classList.add('hidden');
-  document.querySelectorAll<HTMLElement>('.tree-item.previewing').forEach(el => el.classList.remove('previewing'));
-  _sidebarPreviewPath = null;
-}
-
 function initSidebarPreview(): void {
   document.getElementById('sidebar-preview-close')!.onclick = () => hideSidebarPreview();
   document.getElementById('sidebar-preview-open')!.onclick = () => {
-    if (_sidebarPreviewPath) openFile(_sidebarPreviewPath);
+    const path = getSidebarPreviewPath();
+    if (path) openFile(path);
   };
 }
 
@@ -277,135 +129,6 @@ export function openGeneratedFile(path: string, content: string): void {
     activateTab(path);
   }
   updateSaveButton(state.openTabs);
-}
-
-// ── File tree ─────────────────────────────────────────────────────────
-
-export function renderTree(): void {
-  const container = document.getElementById('file-tree') as HTMLElement;
-  if (!state.tree.length) {
-    container.innerHTML = '<div class="tree-loading" id="tree-placeholder">Connect a GitHub repository to start editing.</div>';
-    return;
-  }
-  const blobs = state.tree.filter(f => f.type === 'blob');
-
-  // Build dir map
-  const dirs = new Map<string, { type: 'file'; name: string; path: string }[]>();
-  const roots: { type: 'file' | 'dir'; name: string; path: string; children?: unknown[] }[] = [];
-
-  blobs.forEach(f => {
-    const parts = f.path.split('/');
-    if (parts.length === 1) {
-      roots.push({ type: 'file', name: parts[0], path: f.path });
-    } else {
-      for (let i = 1; i < parts.length; i++) {
-        const dp = parts.slice(0, i).join('/');
-        if (!dirs.has(dp)) dirs.set(dp, []);
-      }
-      const dp = parts.slice(0, -1).join('/');
-      dirs.get(dp)!.push({ type: 'file', name: parts[parts.length - 1], path: f.path });
-    }
-  });
-
-  const rootDirs = new Set<string>();
-  blobs.forEach(f => { const p = f.path.split('/'); if (p.length > 1) rootDirs.add(p[0]); });
-  rootDirs.forEach(d => roots.push({ type: 'dir', name: d, path: d, children: dirs.get(d) ?? [] }));
-  roots.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-
-  container.innerHTML = '';
-  renderNodes(container, roots as TreeNode[], 0, dirs);
-}
-
-type TreeNode = { type: 'file' | 'dir'; name: string; path: string; children?: TreeNode[] };
-
-function renderNodes(container: HTMLElement, nodes: TreeNode[], depth: number, dirs: Map<string, { type: 'file'; name: string; path: string }[]>): void {
-  nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-  nodes.forEach(node => {
-    const el = document.createElement('div');
-    el.className = 'tree-item' + (state.activeTab === node.path ? ' selected' : '');
-    el.dataset.path = node.path;
-    el.style.paddingLeft = `${depth * 12 + (node.type === 'file' ? 18 : 6)}px`;
-
-    if (node.type === 'dir') {
-      const isOpen = treeOpenDirs.has(node.path);
-      el.innerHTML = `
-        <span class="tree-item-chevron ${isOpen ? 'open' : ''}">
-          <svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06Z"/></svg>
-        </span>
-        <svg class="tree-item-icon" viewBox="0 0 16 16" fill="${isOpen ? '#dcb67a' : '#c8a96e'}">
-          ${isOpen ? '<path d="M.513 1.513A1.75 1.75 0 0 1 1.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1H13.5A1.75 1.75 0 0 1 15.25 4.75v8.5A1.75 1.75 0 0 1 13.5 15h-11A1.75 1.75 0 0 1 .75 13.25V2.75c0-.464.184-.91.513-1.237Z"/>' : '<path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z"/>'}
-        </svg>
-        <span class="tree-item-name">${escapeHtml(node.name)}</span>`;
-      el.onclick = (e) => {
-        e.stopPropagation();
-        if (treeOpenDirs.has(node.path)) treeOpenDirs.delete(node.path);
-        else treeOpenDirs.add(node.path);
-        renderTree();
-      };
-      container.appendChild(el);
-      if (isOpen) {
-        const fileChildren = (dirs.get(node.path) ?? []) as TreeNode[];
-        // Find subdirectories that are immediate children of this directory
-        const subDirs: TreeNode[] = [];
-        for (const [dirPath] of dirs) {
-          const parent = dirPath.slice(0, dirPath.lastIndexOf('/'));
-          if (parent === node.path) {
-            subDirs.push({ type: 'dir', name: dirPath.split('/').pop()!, path: dirPath });
-          }
-        }
-        renderNodes(container, [...subDirs, ...fileChildren], depth + 1, dirs);
-      }
-    } else {
-      const isNew = state.openTabs.some(t => t.path === node.path && t.isLocalImport && t.dirty);
-      el.innerHTML = `${fileIconSvg(node.name)}<span class="tree-item-name">${escapeHtml(node.name)}</span>${isNew ? '<span class="tree-new-badge">new</span>' : ''}`;
-      const mediaType = isPreviewable(node.path);
-      if (mediaType === 'image' || mediaType === 'video') {
-        el.draggable = true;
-        el.addEventListener('dragstart', (ev) => {
-          ev.dataTransfer!.setData('application/x-wb-asset', JSON.stringify({ path: node.path, type: mediaType }));
-          ev.dataTransfer!.effectAllowed = 'copy';
-        });
-      }
-      el.onclick = () => {
-        showSidebarPreview(node.path);
-        if (visual.mode !== 'visual') {
-          openFile(node.path);
-        }
-      };
-      container.appendChild(el);
-    }
-  });
-}
-
-/** Lightweight selection update — toggles .selected on tree items
- *  without rebuilding the entire tree DOM. */
-function updateTreeSelection(): void {
-  const container = document.getElementById('file-tree');
-  if (!container) return;
-  container.querySelectorAll<HTMLElement>('.tree-item.selected').forEach(el => el.classList.remove('selected'));
-  if (state.activeTab) {
-    container.querySelector<HTMLElement>(`.tree-item[data-path="${CSS.escape(state.activeTab)}"]`)?.classList.add('selected');
-  }
-}
-
-export function collapseAll(): void {
-  treeOpenDirs.clear();
-  renderTree();
-}
-
-export async function refreshTree(): Promise<void> {
-  if (!state.connected) return;
-  setStatusSync('Refreshing...');
-  try {
-    const { fetchTree } = await import('./github');
-    const { entries: treeEntries, truncated: treeT } = await fetchTree();
-    state.tree = treeEntries.filter(f => f.type === 'blob');
-    if (treeT) notify('File tree is incomplete — repo exceeds GitHub\'s limit. Some files may not appear.', 'warning');
-    cacheTreeShas(state.tree, state.fileShas);
-    renderTree();
-    notify('File tree refreshed', 'success');
-    setStatusSync('Synced');
-  } catch (e) { notify('Refresh failed: ' + (e as Error).message, 'error'); }
 }
 
 // ── Open file ─────────────────────────────────────────────────────────

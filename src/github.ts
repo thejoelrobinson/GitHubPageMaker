@@ -1,4 +1,14 @@
 import { state } from './state';
+import type { GitHubContext } from './types';
+
+// ── Context helper ────────────────────────────────────────────────────
+// Returns current global state as a GitHubContext.  All exported functions
+// accept an optional ctx override so callers with different credentials
+// can pass them in without touching global state.
+
+function getCtx(): GitHubContext {
+  return { token: state.token, owner: state.owner, repo: state.repo, branch: state.branch };
+}
 
 // ── GitHub REST API wrapper ───────────────────────────────────────────
 
@@ -11,7 +21,9 @@ interface GHErrorBody {
 export async function ghFetch<T = unknown>(
   path: string,
   options: Omit<RequestInit, 'body'> & { body?: object } = {},
+  ctx?: GitHubContext,
 ): Promise<T> {
+  const { token } = ctx ?? getCtx();
   const url = `https://api.github.com${path}`;
   const { body, ...rest } = options;
 
@@ -24,7 +36,7 @@ export async function ghFetch<T = unknown>(
       ...rest,
       signal: controller.signal,
       headers: {
-        Authorization:          `Bearer ${state.token}`,
+        Authorization:          `Bearer ${token}`,
         Accept:                 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'Content-Type':         'application/json',
@@ -121,13 +133,16 @@ export interface FileDataRaw {
  * Read a file from the repo, handling both inline base64 (≤1 MB) and the
  * download_url fallback for larger files.  Returns the decoded content string.
  */
-export async function readFileRaw(path: string): Promise<FileDataRaw> {
+export async function readFileRaw(path: string, ctx?: GitHubContext): Promise<FileDataRaw> {
+  const { token, owner, repo, branch } = ctx ?? getCtx();
   const data = await ghFetch<{
     content?: string;
     sha: string;
     download_url?: string;
   }>(
-    `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}?ref=${state.branch}`,
+    `/repos/${owner}/${repo}/contents/${encodeRepoPath(path)}?ref=${branch}`,
+    {},
+    ctx,
   );
 
   const isText = isTextPath(path);
@@ -146,7 +161,7 @@ export async function readFileRaw(path: string): Promise<FileDataRaw> {
     try {
       const res = await fetch(data.download_url, {
         signal: controller.signal,
-        headers: { Authorization: `Bearer ${state.token}` },
+        headers: { Authorization: `Bearer ${token}` },
       });
       clearTimeout(timeoutId);
       if (!res.ok) throw new Error(`download_url failed: ${res.status}`);
@@ -167,8 +182,8 @@ export async function readFileRaw(path: string): Promise<FileDataRaw> {
   throw new Error(`No content available for ${path}`);
 }
 
-export async function readFile(path: string): Promise<FileData> {
-  const { content, sha } = await readFileRaw(path);
+export async function readFile(path: string, ctx?: GitHubContext): Promise<FileData> {
+  const { content, sha } = await readFileRaw(path, ctx);
   return { content, sha };
 }
 
@@ -188,17 +203,20 @@ export async function writeFile(
   content: string,
   message: string,
   sha?: string,
+  ctx?: GitHubContext,
 ): Promise<WriteResult> {
+  const { owner, repo, branch } = ctx ?? getCtx();
   const body: PutBody & object = {
     message,
     content: encodeBase64(content),
-    branch: state.branch,
+    branch,
   };
   if (sha) body.sha = sha;
 
   const res = await ghFetch<{ content: { sha: string } }>(
-    `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}`,
+    `/repos/${owner}/${repo}/contents/${encodeRepoPath(path)}`,
     { method: 'PUT', body },
+    ctx,
   );
   return { sha: (res.content as { sha: string }).sha };
 }
@@ -209,12 +227,15 @@ export interface FetchTreeResult {
   truncated: boolean;
 }
 
-export async function fetchTree(): Promise<FetchTreeResult> {
+export async function fetchTree(ctx?: GitHubContext): Promise<FetchTreeResult> {
+  const { owner, repo, branch } = ctx ?? getCtx();
   const data = await ghFetch<{
     tree: Array<{ path: string; type: string; sha: string }>;
     truncated?: boolean;
   }>(
-    `/repos/${state.owner}/${state.repo}/git/trees/${state.branch}?recursive=1`,
+    `/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`,
+    {},
+    ctx,
   );
   return { entries: data.tree ?? [], truncated: data.truncated === true };
 }
@@ -229,38 +250,46 @@ export async function uploadFile(
   base64Content: string,
   message: string,
   existingSha?: string,
+  ctx?: GitHubContext,
 ): Promise<{ sha: string }> {
+  const { owner, repo, branch } = ctx ?? getCtx();
   interface UploadBody { message: string; content: string; branch: string; sha?: string; }
-  const body: UploadBody = { message, content: base64Content, branch: state.branch };
+  const body: UploadBody = { message, content: base64Content, branch };
   if (existingSha) body.sha = existingSha;
 
   const res = await ghFetch<{ content: { sha: string } }>(
-    `/repos/${state.owner}/${state.repo}/contents/${encodeRepoPath(path)}`,
+    `/repos/${owner}/${repo}/contents/${encodeRepoPath(path)}`,
     { method: 'PUT', body },
+    ctx,
   );
   state.fileShas[path] = res.content.sha;
   return { sha: res.content.sha };
 }
 
-export async function fetchBranches(): Promise<string[]> {
+export async function fetchBranches(ctx?: GitHubContext): Promise<string[]> {
+  const { owner, repo } = ctx ?? getCtx();
   const data = await ghFetch<Array<{ name: string }>>(
-    `/repos/${state.owner}/${state.repo}/branches`,
+    `/repos/${owner}/${repo}/branches`,
+    {},
+    ctx,
   );
   return data.map(b => b.name);
 }
 
-export async function getAuthenticatedUser(): Promise<{ login: string }> {
-  return ghFetch<{ login: string }>('/user');
+export async function getAuthenticatedUser(ctx?: GitHubContext): Promise<{ login: string }> {
+  return ghFetch<{ login: string }>('/user', {}, ctx);
 }
 
 export async function createRepo(
   name: string,
   description: string,
   isPrivate: boolean,
+  ctx?: GitHubContext,
 ): Promise<{ defaultBranch: string }> {
   const res = await ghFetch<{ default_branch: string }>(
     '/user/repos',
     { method: 'POST', body: { name, description, private: isPrivate, auto_init: true } },
+    ctx,
   );
   return { defaultBranch: res.default_branch };
 }

@@ -1,4 +1,4 @@
-import type { AppState, EditorMode, DeviceSize, Page, Theme, VisualProjectState } from './types';
+import type { AppConfig, AppState, EditorMode, DeviceSize, Page, Theme, VisualProjectState } from './types';
 
 // ── App (code editor) state ───────────────────────────────────────────
 export const state: AppState = {
@@ -12,6 +12,11 @@ export const state: AppState = {
   activeTab: null,
   fileShas: {},
   branches: [],
+  ollamaEnabled:    false,
+  ollamaEndpoint:   'http://localhost:11434',
+  ollamaModel:      'llama3.2:3b',
+  browserLLMEnabled: true,
+  browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
 };
 
 // ── Visual editor state ───────────────────────────────────────────────
@@ -40,6 +45,8 @@ export interface VisualEditorState {
   siteDesc: string;
   pendingInsertAfterId: string | null;
   pendingMediaDrop: { path: string; source: 'repo' | 'os'; base64?: string; filename?: string } | null;
+  /** Assets staged locally when not connected to GitHub; uploaded on next Publish. */
+  pendingUploads: Array<{ path: string; base64: string; mediaType: string }>;
 }
 
 export const visual: VisualEditorState = {
@@ -55,6 +62,7 @@ export const visual: VisualEditorState = {
   siteDesc: '',
   pendingInsertAfterId: null,
   pendingMediaDrop: null,
+  pendingUploads: [],
 };
 
 // ── Persistence ───────────────────────────────────────────────────────
@@ -62,10 +70,15 @@ const CONFIG_KEY = 'wb_config';
 
 export function saveConfig(): void {
   localStorage.setItem(CONFIG_KEY, JSON.stringify({
-    token:  state.token,
-    owner:  state.owner,
-    repo:   state.repo,
-    branch: state.branch,
+    token:             state.token,
+    owner:             state.owner,
+    repo:              state.repo,
+    branch:            state.branch,
+    ollamaEnabled:     state.ollamaEnabled,
+    ollamaEndpoint:    state.ollamaEndpoint,
+    ollamaModel:       state.ollamaModel,
+    browserLLMEnabled: state.browserLLMEnabled,
+    browserLLMModel:   state.browserLLMModel,
   }));
 }
 
@@ -75,17 +88,46 @@ export function loadConfig(): AppConfig | null {
     if (!raw) return null;
     const cfg = JSON.parse(raw) as Partial<AppConfig>;
     if (cfg.token && cfg.owner && cfg.repo) {
-      return { token: cfg.token, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch ?? 'main' };
+      return {
+        token:          cfg.token,
+        owner:          cfg.owner,
+        repo:           cfg.repo,
+        branch:             cfg.branch             ?? 'main',
+        ollamaEnabled:      cfg.ollamaEnabled      ?? false,
+        ollamaEndpoint:     cfg.ollamaEndpoint     ?? 'http://localhost:11434',
+        ollamaModel:        cfg.ollamaModel        ?? 'llama3.2:3b',
+        browserLLMEnabled:  cfg.browserLLMEnabled  ?? true,
+        browserLLMModel:    cfg.browserLLMModel    ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+      };
     }
   } catch { /* ignore */ }
   return null;
 }
 
-interface AppConfig {
-  token: string;
-  owner: string;
-  repo: string;
-  branch: string;
+/** Load AI settings (Ollama + browser LLM) — safe to call even when no GitHub config exists. */
+export function loadAISettings(): {
+  ollamaEnabled: boolean; ollamaEndpoint: string; ollamaModel: string;
+  browserLLMEnabled: boolean; browserLLMModel: string;
+} {
+  const defaults = {
+    ollamaEnabled:    false,
+    ollamaEndpoint:   'http://localhost:11434',
+    ollamaModel:      'llama3.2:3b',
+    browserLLMEnabled: true,
+    browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
+  };
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    if (!raw) return defaults;
+    const cfg = JSON.parse(raw) as Partial<AppConfig>;
+    return {
+      ollamaEnabled:    cfg.ollamaEnabled    ?? false,
+      ollamaEndpoint:   cfg.ollamaEndpoint   ?? 'http://localhost:11434',
+      ollamaModel:      cfg.ollamaModel      ?? 'llama3.2:3b',
+      browserLLMEnabled: cfg.browserLLMEnabled ?? true,
+      browserLLMModel:   cfg.browserLLMModel   ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+    };
+  } catch { return defaults; }
 }
 
 export function toVisualProjectState(): VisualProjectState {
@@ -120,21 +162,28 @@ interface LocalDraft {
   version: 2;
   timestamp: number;
   /** toVisualProjectState() snapshot */
-  visualState: VisualProjectState;
+  visualState: VisualProjectState & {
+    /** Staged assets awaiting upload (serialized alongside visual state) */
+    pendingUploads?: Array<{ path: string; base64: string; mediaType: string }>;
+  };
   /** Dirty code-editor tabs */
   dirtyTabs: Array<{ path: string; content: string; sha: string }>;
 }
 
 function draftKey(): string {
+  if (!state.owner || !state.repo) return 'wb_draft_local_v2';
   return `wb_draft_v2_${state.owner}_${state.repo}_${state.branch}`;
 }
 
 export function saveLocalDraft(): void {
-  if (!state.owner || !state.repo) return;
+  const visualState = {
+    ...toVisualProjectState(),
+    ...(visual.pendingUploads.length > 0 && { pendingUploads: visual.pendingUploads }),
+  };
   const draft: LocalDraft = {
     version:      2,
     timestamp:    Date.now(),
-    visualState:  toVisualProjectState(),
+    visualState,
     dirtyTabs:    state.openTabs
       .filter(t => t.dirty && !t.isBinary)
       .map(t => ({ path: t.path, content: t.content, sha: t.sha })),
@@ -158,6 +207,29 @@ export function clearLocalDraft(): void {
 export function hasDraftNewer(remoteFetchTime: number): boolean {
   const d = loadLocalDraft();
   return !!d && d.timestamp > remoteFetchTime;
+}
+
+// ── State mutation helpers ────────────────────────────────────────────
+// Use these instead of the scattered triple-mutation pattern:
+//   visual.dirty = true;
+//   if (visual.activePage) visual.activePage.dirty = true;
+//   updateVisualSaveBtn();  ← called by canvas.markDirty for canvas mutations
+// External callers (pages, index, connection) should use markVisualDirty().
+
+export function markVisualDirty(): void {
+  visual.dirty = true;
+  if (visual.activePage) visual.activePage.dirty = true;
+}
+
+/** Reset all visual editor state to defaults — call on logout or new connection. */
+export function resetVisualState(): void {
+  visual.pages           = [];
+  visual.activePage      = null;
+  visual.selectedBlockId = null;
+  visual.dirty           = false;
+  visual.active          = false;
+  visual.mode            = 'visual';
+  visual.pendingUploads  = [];
 }
 
 export function applyVisualProjectState(data: VisualProjectState): void {
