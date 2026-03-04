@@ -457,7 +457,7 @@
         <div class="form-group">
           <label class="form-label">Model</label>
           <select class="form-input" id="input-browser-llm-model">
-            <option value="onnx-community/Qwen2.5-0.5B-Instruct">Qwen 2.5 0.5B — ~350 MB (recommended)</option>
+            <option value="onnx-community/Qwen3-0.6B-ONNX">Qwen 3 0.6B — ~400 MB (recommended)</option>
             <option value="HuggingFaceTB/SmolLM2-360M-Instruct">SmolLM2 360M — ~200 MB</option>
             <option value="HuggingFaceTB/SmolLM2-135M-Instruct">SmolLM2 135M — ~90 MB (fastest)</option>
           </select>
@@ -804,6 +804,10 @@
   <div style="position:relative;display:flex;align-items:center">
     <button id="wbr-color-swatch" title="Text color"></button>
     <input type="color" id="wbr-color-input" value="#ffffff" tabindex="-1" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
+    <div id="wbr-color-popover" class="wbr-color-popover" hidden>
+      <div id="wbr-color-swatches" class="wbr-color-swatches"></div>
+      <button id="wbr-color-custom" class="wbr-color-custom-btn">Custom color…</button>
+    </div>
   </div>
   <div class="wbr-sep"></div>
   <select class="wbr-select" id="wbr-font-select" title="Font family" style="max-width:90px">

@@ -16,7 +16,7 @@ export const state: AppState = {
   ollamaEndpoint:   'http://localhost:11434',
   ollamaModel:      'llama3.2:3b',
   browserLLMEnabled: true,
-  browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
+  browserLLMModel:   'onnx-community/Qwen3-0.6B-ONNX',
   geminiApiKey: '',
 };
 
@@ -99,7 +99,7 @@ export function loadConfig(): AppConfig | null {
         ollamaEndpoint:     cfg.ollamaEndpoint     ?? 'http://localhost:11434',
         ollamaModel:        cfg.ollamaModel        ?? 'llama3.2:3b',
         browserLLMEnabled:  cfg.browserLLMEnabled  ?? true,
-        browserLLMModel:    cfg.browserLLMModel    ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+        browserLLMModel:    cfg.browserLLMModel    ?? 'onnx-community/Qwen3-0.6B-ONNX',
         geminiApiKey: cfg.geminiApiKey ?? '',
       };
     }
@@ -118,7 +118,7 @@ export function loadAISettings(): {
     ollamaEndpoint:   'http://localhost:11434',
     ollamaModel:      'llama3.2:3b',
     browserLLMEnabled: true,
-    browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
+    browserLLMModel:   'onnx-community/Qwen3-0.6B-ONNX',
     geminiApiKey: '',
   };
   try {
@@ -130,7 +130,7 @@ export function loadAISettings(): {
       ollamaEndpoint:   cfg.ollamaEndpoint   ?? 'http://localhost:11434',
       ollamaModel:      cfg.ollamaModel      ?? 'llama3.2:3b',
       browserLLMEnabled: cfg.browserLLMEnabled ?? true,
-      browserLLMModel:   cfg.browserLLMModel   ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+      browserLLMModel:   cfg.browserLLMModel   ?? 'onnx-community/Qwen3-0.6B-ONNX',
       geminiApiKey: cfg.geminiApiKey ?? '',
     };
   } catch { return defaults; }
