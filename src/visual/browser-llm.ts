@@ -25,9 +25,10 @@ try {
 // ── Public constants ──────────────────────────────────────────────────────────
 
 export const BROWSER_LLM_MODELS: Record<string, string> = {
-  'onnx-community/Qwen3-0.6B-ONNX': 'Qwen 3 0.6B (~400 MB)',
-  'HuggingFaceTB/SmolLM2-360M-Instruct':  'SmolLM2 360M (~200 MB)',
-  'HuggingFaceTB/SmolLM2-135M-Instruct':  'SmolLM2 135M (~90 MB)',
+  'onnx-community/Qwen3-0.6B-ONNX':          'Qwen 3 0.6B (~570 MB)',
+  'onnx-community/Qwen2.5-0.5B-Instruct':    'Qwen 2.5 0.5B (~350 MB)',
+  'HuggingFaceTB/SmolLM2-360M-Instruct':     'SmolLM2 360M (~200 MB)',
+  'HuggingFaceTB/SmolLM2-135M-Instruct':     'SmolLM2 135M (~90 MB)',
 };
 
 export const DEFAULT_BROWSER_MODEL = 'onnx-community/Qwen3-0.6B-ONNX';
