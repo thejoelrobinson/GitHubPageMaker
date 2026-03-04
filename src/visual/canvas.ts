@@ -73,6 +73,8 @@ function stripEditingArtifacts(html: string): string {
 import { coordinator } from './visual-coordinator';
 import { isPreviewSWReady, cacheFileInSW } from '../preview-sw-client';
 import { debounceAutoSave } from '../draft';
+import { getCssColorVars } from './properties';
+import { escapeHtml } from '../utils';
 
 // ── Iframe helper ──────────────────────────────────────────────────────
 function getIframe(): HTMLIFrameElement | null {
@@ -400,8 +402,12 @@ function renderBlockPage(iframe: HTMLIFrameElement, page: Page, afterLoad?: () =
         const ifrWin = iDoc.defaultView as Window;
         const sel    = ifrWin.getSelection();
         if (!sel) return;
-        // Always update saved range (cursor or selection)
-        _richSelectionRange = sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+        // Only update saved range when non-collapsed, OR when iframe has focus (cursor moved
+        // within field). If iframe lost focus (user clicked a parent toolbar select/input),
+        // keep the last saved range so refocusAndSend can restore the text selection.
+        if (!sel.isCollapsed || iDoc.hasFocus()) {
+          _richSelectionRange = sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+        }
         if (sel.isCollapsed || !sel.rangeCount) return;
         const anchor = sel.anchorNode;
         const node   = anchor?.nodeType === 1 ? anchor as Element : (anchor?.parentNode as Element | null);
@@ -838,24 +844,65 @@ function initRichToolbar(): void {
     iframeWin.postMessage(msg, '*');
   };
 
-  // B / I / U / S
+  // B / I / U / S — and snapshot selection before any select/input steals focus
   tb.addEventListener('mousedown', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
-    if (!target.matches('input, select')) e.preventDefault();
+    if (target.closest('select') || target.matches('input[type="color"]')) {
+      // Save selection NOW — mousedown fires before focus leaves the iframe, so the
+      // selection is still alive. By the time 'change' fires, iframe focus is gone.
+      const iframeWin = getIframe()?.contentWindow;
+      if (iframeWin) {
+        const s = iframeWin.getSelection();
+        if (s && s.rangeCount > 0) _richSelectionRange = s.getRangeAt(0).cloneRange();
+      }
+      return; // don't preventDefault — select must open; change handler will restore
+    }
+    if (!target.matches('input')) e.preventDefault();
     const btn = target.closest('[data-rtcmd]') as HTMLElement | null;
     if (btn) refocusAndSend({ type: 'wb:richCmd', cmd: btn.dataset.rtcmd });
   });
 
-  // Color swatch → open native color picker
+  // Color swatch → popover with CSS var swatches (falls back to native picker if no vars)
   const swatch = document.getElementById('wbr-color-swatch') as HTMLButtonElement | null;
   const colorInput = document.getElementById('wbr-color-input') as HTMLInputElement | null;
-  swatch?.addEventListener('mousedown', e => e.preventDefault());
-  swatch?.addEventListener('click', e => { e.preventDefault(); colorInput?.click(); });
+  const popover = document.getElementById('wbr-color-popover') as HTMLElement | null;
+  const swatchesEl = document.getElementById('wbr-color-swatches') as HTMLElement | null;
+  const customBtn = document.getElementById('wbr-color-custom') as HTMLButtonElement | null;
+
+  function populateColorSwatches(): void {
+    if (!swatchesEl) return;
+    const colors = getCssColorVars();
+    swatchesEl.innerHTML = colors.slice(0, 12).map(v =>
+      `<button class="wbr-color-swatch-item" title="${escapeHtml(v.name)}"
+         data-color="${escapeHtml(v.value)}" style="background:${escapeHtml(v.value)}"></button>`,
+    ).join('');
+    swatchesEl.querySelectorAll<HTMLButtonElement>('.wbr-color-swatch-item').forEach(b => {
+      b.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        refocusAndSend({ type: 'wb:richCmd', cmd: 'foreColor', value: b.dataset.color });
+        if (swatch) swatch.style.background = b.dataset.color ?? '';
+        popover?.setAttribute('hidden', '');
+      });
+    });
+  }
+
+  swatch?.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+  swatch?.addEventListener('click', e => {
+    e.preventDefault();
+    const colors = getCssColorVars();
+    if (!colors.length) { colorInput?.click(); return; }
+    populateColorSwatches();
+    popover?.toggleAttribute('hidden');
+  });
+
   colorInput?.addEventListener('input', () => {
     if (!colorInput.value) return;
     refocusAndSend({ type: 'wb:richCmd', cmd: 'foreColor', value: colorInput.value });
     if (swatch) swatch.style.background = colorInput.value;
   });
+
+  customBtn?.addEventListener('mousedown', e => e.preventDefault());
+  customBtn?.addEventListener('click', () => { colorInput?.click(); popover?.setAttribute('hidden', ''); });
 
   // Font family
   const fontSel = document.getElementById('wbr-font-select') as HTMLSelectElement | null;
@@ -878,9 +925,13 @@ function initRichToolbar(): void {
     refocusAndSend({ type: 'wb:richCmd', cmd: 'removeFormat' });
   });
 
-  // Hide when clicking anywhere outside the iframe or toolbar
+  // Hide toolbar (and popover) when clicking outside the iframe or toolbar
   document.addEventListener('mousedown', (e: MouseEvent) => {
     const target = e.target as Element;
+    // Close popover when clicking outside it
+    if (popover && !popover.hidden && !popover.contains(target) && target !== swatch) {
+      popover.setAttribute('hidden', '');
+    }
     if (tb.contains(target)) return;
     const ifr = getIframe();
     if (ifr && (ifr.contains(target) || ifr === target)) return;

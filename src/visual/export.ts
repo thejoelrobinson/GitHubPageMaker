@@ -1,5 +1,5 @@
 import type { Block, Page, Theme } from '../types';
-import { renderBlock } from './blocks';
+import { renderBlock, BLOCK_DEFS } from './blocks';
 import { escapeHtml, stripMd } from '../utils';
 import { state } from '../state';
 
@@ -998,9 +998,17 @@ if(!hasBlocks){
     if(!inField){P.postMessage({type:'wb:richSel',active:false},'*');return;}
     _lastField=ae;  // always save the focused field
     var sel=window.getSelection();
-    // Save range for BOTH collapsed cursor and text selection — restores cursor
-    // position so execCommand applies at the right spot.
-    if(sel&&sel.rangeCount) _lastRange=sel.getRangeAt(0).cloneRange();
+    // Save non-collapsed ranges (text selection) unconditionally.
+    // For collapsed (cursor) ranges, only save when no non-collapsed range is already
+    // saved — this prevents overwriting a valid selection when focus is temporarily
+    // returned to the field by refocusAndSend (which calls _lastField.focus()).
+    if(sel&&sel.rangeCount){
+      if(!sel.isCollapsed){
+        _lastRange=sel.getRangeAt(0).cloneRange();
+      } else if(!_lastRange||_lastRange.collapsed){
+        _lastRange=sel.getRangeAt(0).cloneRange();
+      }
+    }
     // Positioning: above selection if one exists, otherwise above the field center.
     var rect;
     if(sel&&!sel.isCollapsed&&sel.rangeCount&&getSelField()){
@@ -1020,11 +1028,22 @@ if(!hasBlocks){
     },'*');
   }
 
-  // Apply inline style span to current selection (used by wb:richCmd)
+  // Apply inline style span to current selection (used by wb:richCmd).
+  // If selection is collapsed (cursor only), apply to the whole focused field.
   function applySpanStyle(prop,val){
     var sel=window.getSelection();
-    if(!sel||sel.isCollapsed||!sel.rangeCount)return;
-    var range=sel.getRangeAt(0).cloneRange();
+    if(!sel||!sel.rangeCount)return;
+    var range;
+    if(sel.isCollapsed){
+      // No text selected — apply to the entire field so the user can change
+      // e.g. the font family of a whole heading without selecting all text first.
+      var field=_lastField;
+      if(!field)return;
+      range=document.createRange();
+      range.selectNodeContents(field);
+    } else {
+      range=sel.getRangeAt(0).cloneRange();
+    }
     var span=document.createElement('span');
     span.style[prop]=val;
     span.appendChild(range.extractContents());
@@ -1441,6 +1460,17 @@ function buildPageHTML(
     editing ? editingBlockWrapper(b, theme, idx, total) : animWrap(b, renderBlock(b, theme, false)),
   ).join('\n');
 
+  // Collect extraStyles/extraScripts from block definitions (both deduped by Set)
+  const extraStylesSet  = new Set<string>();
+  const extraScriptsSet = new Set<string>();
+  for (const block of page.blocks) {
+    const def = BLOCK_DEFS[block.type];
+    if (def?.extraStyles) extraStylesSet.add(def.extraStyles);
+    if (!editing && def?.extraScripts) extraScriptsSet.add(def.extraScripts);
+  }
+  const extraStylesHtml  = [...extraStylesSet].map(css => `<style>${css}</style>`).join('\n');
+  const extraScriptsHtml = [...extraScriptsSet].join('\n');
+
   const editingStyles = editing ? `<style id="${WB_STYLE_ID}">${EDITING_CSS}</style>` : '';
   const editingBody   = editing ? `${EDITING_TOOLBAR_HTML}${EDITING_SCRIPT}` : '';
 
@@ -1453,7 +1483,8 @@ function buildPageHTML(
     const headExtra = editingStyles
       + customCssTag
       + (hasAnims ? `<style>${SECTION_ANIM_CSS}</style>` : '')
-      + (editing ? '' : `<style>${POLISH_CSS}</style>`);
+      + (editing ? '' : `<style>${POLISH_CSS}</style>`)
+      + (extraStylesHtml ? `\n${extraStylesHtml}` : '');
     const progressBar = editing ? '' : '<div id="wb-progress" aria-hidden="true"></div>\n';
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1466,6 +1497,7 @@ ${progressBar}${blocksHtml}
 ${editingBody}
 ${hasAnims ? SECTION_ANIM_SCRIPT : ''}
 ${editing ? '' : POLISH_SCRIPT}
+${extraScriptsHtml}
 </body>
 </html>`;
   }
@@ -1500,6 +1532,7 @@ ${themeCSS(theme)}
 ${editing ? '' : POLISH_CSS}
 ${hasAnims ? SECTION_ANIM_CSS : ''}
 </style>
+${extraStylesHtml}
 <base href="${base}">
 </head>
 <body>
@@ -1508,6 +1541,7 @@ ${editingBody}
 ${NAV_SCRIPT}
 ${hasAnims ? SECTION_ANIM_SCRIPT : ''}
 ${editing ? '' : POLISH_SCRIPT}
+${extraScriptsHtml}
 </body>
 </html>`;
 }
