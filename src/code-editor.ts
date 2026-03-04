@@ -111,6 +111,21 @@ export function initMonaco(): void {
   initSidebarPreview();
 }
 
+// ── Create a new blank file ───────────────────────────────────────────
+
+export function newFile(): void {
+  let name = 'untitled.html';
+  let i = 1;
+  while (state.openTabs.find(t => t.path === name)) {
+    name = `untitled-${i++}.html`;
+  }
+  const blank = '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>Untitled</title>\n</head>\n<body>\n\n</body>\n</html>';
+  const tab: Tab = { path: name, content: blank, sha: '', dirty: true, language: 'html' };
+  state.openTabs.push(tab);
+  activateTab(name);
+  updateSaveButton(state.openTabs);
+}
+
 // ── Open a generated file from visual mode ────────────────────────────
 
 export function openGeneratedFile(path: string, content: string): void {

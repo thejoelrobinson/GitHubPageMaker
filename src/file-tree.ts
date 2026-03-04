@@ -13,7 +13,10 @@ type TreeNode = { type: 'file' | 'dir'; name: string; path: string; children?: T
 export function renderTree(): void {
   const container = document.getElementById('file-tree') as HTMLElement;
   if (!state.tree.length) {
-    container.innerHTML = '<div class="tree-loading" id="tree-placeholder">Connect a GitHub repository to start editing.</div>';
+    const msg = state.connected
+      ? 'Loading…'
+      : 'No repository connected. Files you create are saved as local drafts.';
+    container.innerHTML = `<div class="tree-loading" id="tree-placeholder">${msg}</div>`;
     return;
   }
   const blobs = state.tree.filter(f => f.type === 'blob');

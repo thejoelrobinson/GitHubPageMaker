@@ -33,6 +33,10 @@ export interface ContentSection {
   sectionStats: StatItem[];
   /** Heading depth from the source document (1=H1, 2=H2, 3=H3). Default 2. */
   depth: 1 | 2 | 3;
+  /** Image filenames (from embedded document images) that appear in this section's content. */
+  sectionImages: string[];
+  /** Optional labeled item groups (e.g. definition lists) within this section. */
+  labeledGroups?: Array<Array<{ label: string; body: string }>>;
 }
 
 export interface BulletGroup {
@@ -1160,7 +1164,7 @@ function detectImplicitH3(line: string): string | null {
 
 /** Make an empty ContentSection with all new required fields. */
 function makeSection(heading: string, depth: 1 | 2 | 3 = 2): ContentSection {
-  return { heading, paragraphs: [], subSections: [], sectionStats: [], depth };
+  return { heading, paragraphs: [], subSections: [], sectionStats: [], depth, sectionImages: [] };
 }
 
 /** Make an empty SubSection. */
@@ -1183,6 +1187,19 @@ function detectSections(lines: string[], _title: string): ContentSection[] {
   };
 
   for (const line of lines) {
+    // Image placement marker from doc extraction — consume without adding to paragraphs
+    const imgMarker = /^\[IMAGE:([^\]]+)\]$/.exec(line);
+    if (imgMarker) {
+      const fn = imgMarker[1].trim();
+      if (fn) {
+        if (current) {
+          current.sectionImages.push(fn);
+        }
+        // If before any section, will be picked up by hero image selection
+      }
+      continue;
+    }
+
     const isH1H2 = /^#{1,2}\s+\S/.test(line);
     const isH3   = /^#{3}\s+\S/.test(line);
 

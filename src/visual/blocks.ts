@@ -1,5 +1,5 @@
 import type { Block, BlockContent, BlockSettings, NavLink, Theme } from '../types';
-import { escapeHtml, renderInlineMarkdown, sanitizeUrl, uid } from '../utils';
+import { escapeHtml, renderTextField, sanitizeUrl, uid } from '../utils';
 import { LD_BLOCK_DEFS } from './ld-blocks';
 
 // ── Block Definition Interface ─────────────────────────────────────────
@@ -130,9 +130,9 @@ const hero: BlockDef = {
     const dropAttr = editing ? ` data-drop-field="settings.bgImage" data-block-id="${block.id}"` : '';
     return `<section${dropAttr} style="${sectionBg(block.settings)}min-height:${minH};display:flex;align-items:center;justify-content:${justify};color:${String(block.settings.textColor)};position:relative;text-align:${textA};font-family:'${theme.bodyFont}',sans-serif">
   ${overlay}
-  <div style="position:relative;z-index:1;max-width:860px;margin:0 auto;padding:80px 40px">
-    <h1${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2.2rem,5vw,3.8rem);font-weight:800;line-height:1.1;margin-bottom:20px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h1>
-    <p${editAttr(block.id, 'subheading', editing)} style="font-size:clamp(1rem,2.5vw,1.3rem);margin-bottom:40px;opacity:.85;max-width:620px;${textA === 'center' ? 'margin-left:auto;margin-right:auto' : ''};line-height:1.6">${renderInlineMarkdown(block.content.subheading)}</p>
+  <div${editing ? '' : ' class="wb-hero-seq"'} style="position:relative;z-index:1;max-width:860px;margin:0 auto;padding:80px 40px">
+    <h1${editAttr(block.id, 'heading', editing)} style="font-size:clamp(2.2rem,5vw,3.8rem);font-weight:800;line-height:1.1;margin-bottom:20px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h1>
+    <p${editAttr(block.id, 'subheading', editing)} style="font-size:clamp(1rem,2.5vw,1.3rem);margin-bottom:40px;opacity:.85;max-width:620px;${textA === 'center' ? 'margin-left:auto;margin-right:auto' : ''};line-height:1.6">${renderTextField(block.content.subheading)}</p>
     <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:${justify}">
       <a href="${sanitizeUrl(escapeHtml(block.content.btn1Link as string))}"${editAttr(block.id, 'btn1Text', editing)} style="${btnStyle(theme.accent, theme.radius)}">${escapeHtml(block.content.btn1Text)}</a>
       ${block.content.showBtn2 ? `<a href="${sanitizeUrl(escapeHtml(block.content.btn2Link as string))}"${editAttr(block.id, 'btn2Text', editing)} style="${btnOutlineStyle('rgba(255,255,255,.85)', theme.radius)}">${escapeHtml(block.content.btn2Text)}</a>` : ''}
@@ -223,11 +223,11 @@ const features: BlockDef = {
       <h2${editAttr(block.id, 'sectionTitle', editing)} style="font-size:clamp(1.7rem,3vw,2.5rem);font-weight:800;color:${String(block.settings.textColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:${sub ? '12px' : '0'}">${escapeHtml(block.content.sectionTitle)}</h2>
       ${sub ? `<p${editAttr(block.id, 'sectionSub', editing)} style="font-size:1.1rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${escapeHtml(sub)}</p>` : ''}
     </div>
-    <div style="display:grid;grid-template-columns:repeat(${activeCols},1fr);gap:28px">
-      ${cards.map(i => `<div style="background:${String(block.settings.cardBg)};border-radius:${theme.radius}px;padding:36px 28px;${shadow}${border}">
+    <div class="wb-stagger" style="display:grid;grid-template-columns:repeat(${activeCols},1fr);gap:28px">
+      ${cards.map(i => `<div class="wb-feat-card wb-stag-item" style="background:${String(block.settings.cardBg)};border-radius:${theme.radius}px;padding:36px 28px;${shadow}${border}">
         <div${editAttr(block.id, `card${i}Icon`, editing)} style="font-size:2rem;margin-bottom:16px">${escapeHtml(block.content[`card${i}Icon`])}</div>
-        <h3${editAttr(block.id, `card${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.textColor)};margin-bottom:10px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content[`card${i}Title`])}</h3>
-        <p${editAttr(block.id, `card${i}Desc`, editing)} style="color:${theme.textMuted};line-height:1.7;font-size:.95rem">${renderInlineMarkdown(block.content[`card${i}Desc`])}</p>
+        <h3${editAttr(block.id, `card${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.textColor)};margin-bottom:10px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content[`card${i}Title`])}</h3>
+        <p${editAttr(block.id, `card${i}Desc`, editing)} style="color:${theme.textMuted};line-height:1.7;font-size:.95rem">${renderTextField(block.content[`card${i}Desc`])}</p>
       </div>`).join('')}
     </div>
   </div>
@@ -281,8 +281,8 @@ const split: BlockDef = {
     const imgDropAttr = editing ? ` data-drop-field="content.imageUrl" data-block-id="${block.id}"` : '';
     const imgEl = `<div style="flex:1;min-width:280px"><img${imgDropAttr} src="${escapeHtml(block.content.imageUrl as string)}" alt="${escapeHtml(block.content.imageAlt)}" style="width:100%;height:420px;object-fit:cover;border-radius:${theme.radius}px;display:block"></div>`;
     const textEl = `<div style="flex:1;min-width:280px;display:flex;flex-direction:column;justify-content:center">
-      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:20px;line-height:1.2;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
-      <p${editAttr(block.id, 'body', editing)} style="color:${theme.textMuted};line-height:1.8;font-size:1.05rem;margin-bottom:32px">${renderInlineMarkdown(block.content.body)}</p>
+      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.4rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:20px;line-height:1.2;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
+      <p${editAttr(block.id, 'body', editing)} style="color:${theme.textMuted};line-height:1.8;font-size:1.05rem;margin-bottom:32px">${renderTextField(block.content.body)}</p>
       ${block.content.showBtn ? `<div><a href="${sanitizeUrl(escapeHtml(block.content.btnLink as string))}"${editAttr(block.id, 'btnText', editing)} style="${btnStyle(theme.accent, theme.radius)}">${escapeHtml(block.content.btnText)}</a></div>` : ''}
     </div>`;
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
@@ -332,9 +332,9 @@ const stats: BlockDef = {
   render(block, theme, editing) {
     const items = [1,2,3,4];
     return `<section style="background:${String(block.settings.bg)};padding:64px 40px;font-family:'${theme.bodyFont}',sans-serif">
-  <div style="max-width:1000px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:24px;text-align:center">
-    ${items.map(i => `<div>
-      <div${editAttr(block.id, `stat${i}Num`, editing)} style="font-size:clamp(2rem,4vw,3rem);font-weight:800;color:${String(block.settings.numColor)};font-family:'${theme.headingFont}',sans-serif;line-height:1">${escapeHtml(block.content[`stat${i}Num`])}</div>
+  <div class="wb-stagger" style="max-width:1000px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:24px;text-align:center">
+    ${items.map(i => `<div class="wb-stag-item wb-stat-card">
+      <div${editAttr(block.id, `stat${i}Num`, editing)} class="wb-stat-num" style="font-size:clamp(2rem,4vw,3rem);font-family:'${theme.headingFont}',sans-serif;line-height:1">${escapeHtml(block.content[`stat${i}Num`])}</div>
       <div${editAttr(block.id, `stat${i}Label`, editing)} style="color:${String(block.settings.labelColor)};margin-top:8px;font-size:.95rem">${escapeHtml(block.content[`stat${i}Label`])}</div>
     </div>`).join('')}
   </div>
@@ -368,11 +368,11 @@ const textBlock: BlockDef = {
     const paras = String(block.content.body).split('\n\n').filter(Boolean);
     return `<section style="background:${String(block.settings.bg)};padding:72px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:${String(block.settings.maxWidth)}px;margin:0 auto;text-align:${String(block.settings.align)}">
-    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:24px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
+    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:24px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
     <div style="color:${theme.textMuted};line-height:1.8;font-size:1.05rem">
       ${paras.map((p, i) => i === 0 && editing
-        ? `<p${editAttr(block.id, 'body', editing)} style="margin-bottom:16px">${renderInlineMarkdown(p)}</p>`
-        : `<p style="margin-bottom:16px">${renderInlineMarkdown(p)}</p>`
+        ? `<p${editAttr(block.id, 'body', editing)} style="margin-bottom:16px">${renderTextField(p)}</p>`
+        : `<p style="margin-bottom:16px">${renderTextField(p)}</p>`
       ).join('')}
     </div>
   </div>
@@ -417,7 +417,7 @@ const testimonial: BlockDef = {
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:740px;margin:0 auto;text-align:center">
     <div style="font-size:4rem;color:${String(block.settings.accentColor)};line-height:.8;margin-bottom:16px;font-family:Georgia,serif">"</div>
-    <blockquote${editAttr(block.id, 'quote', editing)} style="font-size:clamp(1.1rem,2.5vw,1.4rem);color:${String(block.settings.quoteColor)};line-height:1.7;margin-bottom:36px;font-style:italic">${renderInlineMarkdown(block.content.quote)}</blockquote>
+    <blockquote${editAttr(block.id, 'quote', editing)} style="font-size:clamp(1.1rem,2.5vw,1.4rem);color:${String(block.settings.quoteColor)};line-height:1.7;margin-bottom:36px;font-style:italic">${renderTextField(block.content.quote)}</blockquote>
     <div style="display:flex;align-items:center;justify-content:center;gap:16px">
       <img${editing ? ` data-drop-field="content.avatar" data-block-id="${block.id}"` : ''} src="${escapeHtml(block.content.avatar as string)}" alt="${escapeHtml(block.content.author)}" style="width:52px;height:52px;border-radius:50%;object-fit:cover">
       <div style="text-align:left">
@@ -466,7 +466,7 @@ const gallery: BlockDef = {
     const imgs = Array.from({ length: count }, (_, i) => block.content[`img${i+1}`] as string);
     return `<section style="background:${String(block.settings.bg)};padding:72px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:1200px;margin:0 auto">
-    <h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
+    <h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
     <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:16px">
       ${imgs.map((src, i) => `<div style="border-radius:${theme.radius}px;overflow:hidden;aspect-ratio:4/3"><img${editing ? ` data-drop-field="content.img${i+1}" data-block-id="${block.id}"` : ''} src="${escapeHtml(src)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block;transition:transform .3s" onmouseover="this.style.transform='scale(1.04)'" onmouseout="this.style.transform='scale(1)'"></div>`).join('')}
     </div>
@@ -518,8 +518,8 @@ const cta: BlockDef = {
   render(block, theme, editing) {
     return `<section style="${sectionBg(block.settings)}padding:80px 40px;text-align:center;color:${String(block.settings.textColor)};font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:680px;margin:0 auto">
-    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.8rem,4vw,3rem);font-weight:800;margin-bottom:16px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
-    <p${editAttr(block.id, 'subtext', editing)} style="font-size:1.15rem;opacity:.8;margin-bottom:40px;line-height:1.6">${renderInlineMarkdown(block.content.subtext)}</p>
+    <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.8rem,4vw,3rem);font-weight:800;margin-bottom:16px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
+    <p${editAttr(block.id, 'subtext', editing)} style="font-size:1.15rem;opacity:.8;margin-bottom:40px;line-height:1.6">${renderTextField(block.content.subtext)}</p>
     <div style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap">
       <a href="${sanitizeUrl(escapeHtml(block.content.btnLink as string))}"${editAttr(block.id, 'btnText', editing)} style="${btnStyle(theme.accent, theme.radius)}">${escapeHtml(block.content.btnText)}</a>
       ${block.content.showBtn2 ? `<a href="${sanitizeUrl(escapeHtml(block.content.btn2Link as string))}"${editAttr(block.id, 'btn2Text', editing)} style="${btnOutlineStyle('rgba(255,255,255,.8)', theme.radius)}">${escapeHtml(block.content.btn2Text)}</a>` : ''}
@@ -579,7 +579,7 @@ const footer: BlockDef = {
     <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:48px;margin-bottom:48px">
       <div>
         <div${editAttr(block.id, 'logo', editing)} style="font-size:22px;font-weight:700;color:${String(block.settings.logoColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:12px">${escapeHtml(block.content.logo)}</div>
-        <p${editAttr(block.id, 'tagline', editing)} style="color:${String(block.settings.textColor)};line-height:1.6;font-size:.95rem;max-width:240px">${renderInlineMarkdown(block.content.tagline)}</p>
+        <p${editAttr(block.id, 'tagline', editing)} style="color:${String(block.settings.textColor)};line-height:1.6;font-size:.95rem;max-width:240px">${renderTextField(block.content.tagline)}</p>
       </div>
       <div>
         <div${editAttr(block.id, 'col1Title', editing)} style="color:${String(block.settings.headingColor)};font-weight:700;margin-bottom:16px;font-size:.95rem;text-transform:uppercase;letter-spacing:.05em">${escapeHtml(block.content.col1Title)}</div>
@@ -880,7 +880,7 @@ const logos: BlockDef = {
     ).join('');
     return `<section style="background:${String(block.settings.bg)};padding:56px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:1000px;margin:0 auto;text-align:center">
-    <p${editAttr(block.id, 'heading', editing)} style="color:${String(block.settings.textColor)};font-size:.95rem;margin-bottom:32px;text-transform:uppercase;letter-spacing:1px;font-weight:600">${renderInlineMarkdown(block.content.heading)}</p>
+    <p${editAttr(block.id, 'heading', editing)} style="color:${String(block.settings.textColor)};font-size:.95rem;margin-bottom:32px;text-transform:uppercase;letter-spacing:1px;font-weight:600">${renderTextField(block.content.heading)}</p>
     <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:40px">${imgs}</div>
   </div>
 </section>`;
@@ -938,8 +938,8 @@ const pricing: BlockDef = {
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:1100px;margin:0 auto">
     <div style="text-align:center;margin-bottom:52px">
-      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.5rem);font-weight:800;color:${String(block.settings.textColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:12px">${renderInlineMarkdown(block.content.heading)}</h2>
-      <p${editAttr(block.id, 'subtext', editing)} style="font-size:1.1rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${renderInlineMarkdown(block.content.subtext)}</p>
+      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.7rem,3vw,2.5rem);font-weight:800;color:${String(block.settings.textColor)};font-family:'${theme.headingFont}',sans-serif;margin-bottom:12px">${renderTextField(block.content.heading)}</h2>
+      <p${editAttr(block.id, 'subtext', editing)} style="font-size:1.1rem;color:${theme.textMuted};max-width:520px;margin:0 auto;line-height:1.6">${renderTextField(block.content.subtext)}</p>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start">
       ${plans.map(i => {
@@ -1001,7 +1001,7 @@ const faq: BlockDef = {
     const items = Array.from({ length: count }, (_, i) => i + 1);
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:760px;margin:0 auto">
-    <h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
+    <h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
     ${items.map(i => `<details style="border-bottom:1px solid #e2e8f0;padding:16px 0;cursor:pointer" ${i === 1 ? 'open' : ''}>
       <summary${editAttr(block.id, `q${i}`, editing)} style="font-weight:600;color:${String(block.settings.textColor)};font-size:1.05rem;list-style:none;display:flex;align-items:center;justify-content:space-between">
         ${escapeHtml(block.content[`q${i}`])}
@@ -1063,8 +1063,8 @@ const formBlock: BlockDef = {
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:560px;margin:0 auto">
     <div style="text-align:center;margin-bottom:40px">
-      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:12px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>
-      <p${editAttr(block.id, 'subtext', editing)} style="color:${theme.textMuted};line-height:1.6">${renderInlineMarkdown(block.content.subtext)}</p>
+      <h2${editAttr(block.id, 'heading', editing)} style="font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.textColor)};margin-bottom:12px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>
+      <p${editAttr(block.id, 'subtext', editing)} style="color:${theme.textMuted};line-height:1.6">${renderTextField(block.content.subtext)}</p>
     </div>
     <form action="${sanitizeUrl(escapeHtml(block.content.action as string))}" method="POST" style="background:${String(block.settings.cardBg)};border-radius:${theme.radius}px;padding:32px;box-shadow:0 4px 24px rgba(0,0,0,.06)">
       ${fieldHtml}
@@ -1119,7 +1119,7 @@ const quote: BlockDef = {
     <div style="display:flex;justify-content:${justify};margin-bottom:8px">
       <span style="font-size:5rem;color:${String(block.settings.accentColor)};line-height:.7;font-family:Georgia,serif;opacity:.4">\u201C</span>
     </div>
-    <blockquote${editAttr(block.id, 'quote', editing)} style="font-size:${fontSize};font-style:italic;color:${String(block.settings.textColor)};line-height:1.6;margin:0 0 24px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.quote)}</blockquote>
+    <blockquote${editAttr(block.id, 'quote', editing)} style="font-size:${fontSize};font-style:italic;color:${String(block.settings.textColor)};line-height:1.6;margin:0 0 24px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.quote)}</blockquote>
     ${block.content.showAttrib ? `<p${editAttr(block.id, 'attribution', editing)} style="color:${String(block.settings.accentColor)};font-size:.95rem;font-weight:600;letter-spacing:.02em">\u2014 ${escapeHtml(block.content.attribution)}</p>` : ''}
   </div>
 </section>`;
@@ -1179,11 +1179,11 @@ const columns: BlockDef = {
     const colItems = [1, 2, 3].slice(0, cols);
     return `<section style="background:${String(block.settings.bg)};padding:80px 40px;font-family:'${theme.bodyFont}',sans-serif">
   <div style="max-width:1100px;margin:0 auto">
-    ${block.content.heading ? `<h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.headingColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderInlineMarkdown(block.content.heading)}</h2>` : ''}
+    ${block.content.heading ? `<h2${editAttr(block.id, 'heading', editing)} style="text-align:center;font-size:clamp(1.6rem,3vw,2.2rem);font-weight:800;color:${String(block.settings.headingColor)};margin-bottom:48px;font-family:'${theme.headingFont}',sans-serif">${renderTextField(block.content.heading)}</h2>` : ''}
     <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:40px">
       ${colItems.map(i => `<div>
         <h3${editAttr(block.id, `col${i}Title`, editing)} style="font-size:1.2rem;font-weight:700;color:${String(block.settings.titleColor)};margin-bottom:12px;font-family:'${theme.headingFont}',sans-serif">${escapeHtml(block.content[`col${i}Title`])}</h3>
-        <p${editAttr(block.id, `col${i}Text`, editing)} style="color:${String(block.settings.textColor)};line-height:1.7;font-size:.95rem">${renderInlineMarkdown(block.content[`col${i}Text`])}</p>
+        <p${editAttr(block.id, `col${i}Text`, editing)} style="color:${String(block.settings.textColor)};line-height:1.7;font-size:.95rem">${renderTextField(block.content[`col${i}Text`])}</p>
       </div>`).join('')}
     </div>
   </div>

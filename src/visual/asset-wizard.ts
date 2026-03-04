@@ -16,9 +16,13 @@ import { registerLocalAsset } from './local-asset-registry';
 import { cacheFileInSW, isPreviewSWReady } from '../preview-sw-client';
 import { analyzeContent, assembleBlocks } from './content-extract';
 import { validateHeadings } from './llm-validator';
-import { validateHeadingsInBrowser, isBrowserLLMReady, DEFAULT_BROWSER_MODEL } from './browser-llm';
+import { validateHeadingsInBrowser, isBrowserLLMReady, DEFAULT_BROWSER_MODEL,
+         polishAssembledBlocksInBrowser,
+         generatePremiumPageBrowserLLM } from './browser-llm';
+import { isGeminiReady, getGeminiConfig, validateHeadingsCloud, polishAssembledBlocks, generateFullPageHTML } from './cloud-llm';
 import { assembleBlocksFromSlides } from './slide-blocks';
 import { addEmptyPage, switchPage } from './pages';
+import { renderTabs } from '../code-editor';
 import { addBlockAfter, renderCanvas } from './canvas';
 import { renderSectionList, renderPageList } from './pages';
 import { openSettings } from '../modal';
@@ -34,7 +38,10 @@ export function updateAiChip(): void {
   const label = document.getElementById('wizard-ai-chip-label');
   const icon  = document.getElementById('wizard-ai-chip-icon');
   if (!label || !icon) return;
-  if (state.browserLLMEnabled && isBrowserLLMReady()) {
+  if (isGeminiReady()) {
+    label.textContent = 'AI on — Gemini';
+    icon.style.color = 'var(--accent)';
+  } else if (state.browserLLMEnabled && isBrowserLLMReady()) {
     const modelShort = (state.browserLLMModel || DEFAULT_BROWSER_MODEL).split('/').pop() ?? 'AI';
     label.textContent = `AI on — ${modelShort}`;
     icon.style.color = 'var(--accent)';
@@ -42,7 +49,7 @@ export function updateAiChip(): void {
     label.textContent = 'AI downloading…';
     icon.style.color = 'var(--text-dim)';
   } else if (state.ollamaEnabled) {
-    label.textContent = `AI on — Ollama`;
+    label.textContent = 'AI on — Ollama';
     icon.style.color = 'var(--accent)';
   } else {
     label.textContent = 'AI off';
@@ -85,6 +92,14 @@ function showStep(step: 'upload' | 'processing' | 'done'): void {
     const el = document.getElementById(`wizard-step-${s}`);
     if (el) el.style.display = s === step ? 'block' : 'none';
   });
+  const modal = document.querySelector('.wizard-modal');
+  if (step === 'processing') {
+    clearProcessingUI();
+    // Two-frame delay so the modal is visible before widening — lets the CSS transition play
+    requestAnimationFrame(() => requestAnimationFrame(() => modal?.classList.add('wizard-modal--wide')));
+  } else {
+    modal?.classList.remove('wizard-modal--wide');
+  }
 }
 
 // ── File staging ──────────────────────────────────────────────────────────────
@@ -194,57 +209,116 @@ let STEPS: string[] = [];
 
 /** Show which file is actively being read or extracted (steps 0–1). */
 function setCurrentFile(file: File | null, msg = ''): void {
-  const el = document.getElementById('wizard-current-file');
-  if (!el) return;
+  const card = document.getElementById('wiz-doc-card');
+  if (!card) return;
   if (!file) {
-    el.style.display = 'none';
-    el.innerHTML = '';
+    card.classList.remove('wiz-doc-card--active');
     return;
   }
-  el.style.display = 'flex';
-  el.innerHTML = `<span class="wcf-icon">${fileIcon(file)}</span>
-    <span class="wcf-name">${escapeHtml(file.name)}</span>
-    ${msg ? `<span class="wcf-msg">${escapeHtml(msg)}</span>` : ''}
-    <span class="wfu-badge wfu-badge--uploading"><span class="wfu-spinner"></span></span>`;
+  card.style.display = 'flex';
+  card.classList.add('wiz-doc-card--active');
+  const emojiEl = document.getElementById('wiz-doc-emoji');
+  const nameEl  = document.getElementById('wiz-doc-name');
+  const msgEl   = document.getElementById('wiz-doc-msg');
+  if (emojiEl) emojiEl.textContent = fileIcon(file);
+  if (nameEl)  nameEl.textContent  = file.name;
+  if (msgEl)   msgEl.textContent   = msg;
 }
 
 // ── Per-file upload progress ──────────────────────────────────────────────────
 
+/** A single log-line element that gets updated in-place during the upload loop. */
+let _uploadStatusEl: HTMLElement | null = null;
+
 function renderFileUploads(imgs: ImageAsset[]): void {
-  const el = document.getElementById('wizard-file-uploads');
-  if (!el) return;
-  if (!imgs.length) { el.style.display = 'none'; return; }
-  el.style.display = 'block';
-  el.innerHTML = `<div class="wfu-list">${
-    imgs.map((img, i) =>
-      `<div class="wfu-item" id="wfu-item-${i}">
-        <span class="wfu-name">${escapeHtml(img.filename)}</span>
-        <span class="wfu-badge wfu-badge--pending">—</span>
-      </div>`,
-    ).join('')
-  }</div>`;
+  if (!imgs.length) return;
+  const lines = document.getElementById('wiz-log-lines');
+  if (!lines) return;
+  _uploadStatusEl = document.createElement('div');
+  _uploadStatusEl.className = 'wiz-log-line wiz-log-line--hi';
+  _uploadStatusEl.textContent = `› Uploading 0 / ${imgs.length} assets…`;
+  lines.appendChild(_uploadStatusEl);
+  const wrap = lines.parentElement;
+  if (wrap) wrap.scrollTop = wrap.scrollHeight;
 }
 
-function setFileUploadStatus(idx: number, status: 'uploading' | 'done' | 'error'): void {
-  const item = document.getElementById(`wfu-item-${idx}`);
-  if (!item) return;
-  const badge = item.querySelector('.wfu-badge') as HTMLElement | null;
-  if (!badge) return;
-
-  item.classList.toggle('wfu-item--active', status === 'uploading');
-  const name = item.querySelector('.wfu-name');
-  name?.classList.toggle('wfu-name--active', status === 'uploading');
-
-  if (status === 'uploading') {
-    badge.className = 'wfu-badge wfu-badge--uploading';
-    badge.innerHTML = '<span class="wfu-spinner"></span>uploading';
-  } else if (status === 'done') {
-    badge.className = 'wfu-badge wfu-badge--done';
-    badge.textContent = '✓ done';
-  } else {
-    badge.className = 'wfu-badge wfu-badge--error';
-    badge.textContent = '⚠ skipped';
+function setFileUploadStatus(idx: number, status: 'uploading' | 'done' | 'error', filename = '', total = 0): void {
+  // Update the overlay on the gallery thumbnail
+  const item = document.querySelector<HTMLElement>(`[data-gi-idx="${idx}"]`);
+  const ov   = item?.querySelector('.wiz-gi-ov');
+  if (ov) {
+    ov.className = `wiz-gi-ov wiz-gi-ov--${status}`;
   }
+  // Update the shared status line
+  if (_uploadStatusEl && total > 0) {
+    if (status === 'uploading') {
+      _uploadStatusEl.className = 'wiz-log-line wiz-log-line--hi';
+      _uploadStatusEl.textContent = `› Uploading ${filename} (${idx + 1} / ${total})…`;
+    } else if (status === 'done') {
+      _uploadStatusEl.className = 'wiz-log-line wiz-log-line--ok';
+      _uploadStatusEl.textContent = `› Uploaded ${idx + 1} / ${total}: ${filename}`;
+    } else {
+      _uploadStatusEl.className = 'wiz-log-line wiz-log-line--err';
+      _uploadStatusEl.textContent = `› Skipped ${filename} (upload failed)`;
+    }
+    const wrap = _uploadStatusEl.closest('.wiz-log-wrap');
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  }
+}
+
+// ── Live-feedback helpers ─────────────────────────────────────────────────────
+
+let _giCount = 0; // gallery item counter, reset per run
+
+function clearProcessingUI(): void {
+  const logEl = document.getElementById('wiz-log-lines');
+  if (logEl) logEl.innerHTML = '';
+  const gallery = document.getElementById('wiz-gallery');
+  const items   = document.getElementById('wiz-gallery-items');
+  if (gallery) gallery.style.display = 'none';
+  if (items)   items.innerHTML = '';
+  const card = document.getElementById('wiz-doc-card');
+  if (card) { card.style.display = 'none'; card.classList.remove('wiz-doc-card--active'); }
+  const sub = document.getElementById('wiz-proc-sub');
+  if (sub) sub.textContent = '';
+  _uploadStatusEl = null;
+  _giCount = 0;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Append a line to the stream log and yield one animation frame so the
+ *  browser paints the slide-in animation before the next line is added. */
+async function addLogLine(msg: string, cls: 'hi' | 'ok' | 'err' | '' = ''): Promise<void> {
+  const lines = document.getElementById('wiz-log-lines');
+  if (!lines) return;
+  const div = document.createElement('div');
+  div.className = `wiz-log-line${cls ? ` wiz-log-line--${cls}` : ''}`;
+  div.textContent = `› ${msg}`;
+  lines.appendChild(div);
+  const wrap = lines.parentElement;
+  if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+}
+
+function addExtractedImage(base64: string, mediaType: string, name: string): void {
+  const gallery = document.getElementById('wiz-gallery');
+  const items   = document.getElementById('wiz-gallery-items');
+  if (!gallery || !items) return;
+  gallery.style.display = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'wiz-gallery-item';
+  wrap.dataset.giIdx = String(_giCount++);
+  const img = document.createElement('img');
+  img.className = 'wiz-gallery-thumb';
+  img.src = `data:${mediaType};base64,${base64}`;
+  img.alt = name;
+  img.title = name;
+  const ov = document.createElement('div');
+  ov.className = 'wiz-gi-ov';
+  wrap.appendChild(img);
+  wrap.appendChild(ov);
+  items.appendChild(wrap);
 }
 
 // ── Progress steps ────────────────────────────────────────────────────────────
@@ -523,8 +597,11 @@ export async function runGeneration(): Promise<void> {
   if (_stagedFiles.length === 0) return;
 
   showStep('processing');
+  await sleep(50); // guarantee the processing screen paints before heavy extraction starts
 
-  const hasAI = (state.browserLLMEnabled && isBrowserLLMReady()) ||
+  const hasGemini = isGeminiReady();
+  const hasAI = hasGemini ||
+                (state.browserLLMEnabled && isBrowserLLMReady()) ||
                 (state.ollamaEnabled && !!state.ollamaEndpoint);
   STEPS = [
     'Reading files',
@@ -550,6 +627,7 @@ export async function runGeneration(): Promise<void> {
 
   // Step 0: Reading files
   try {
+    await addLogLine(`Reading ${_stagedFiles.length} file${_stagedFiles.length !== 1 ? 's' : ''}…`);
     for (const file of _stagedFiles) {
       const lower = file.name.toLowerCase();
       if (/\.(jpe?g|png|gif|webp|svg|avif)$/i.test(lower)) {
@@ -561,6 +639,7 @@ export async function runGeneration(): Promise<void> {
           mediaType: file.type || 'image/jpeg',
           sizeBytes: file.size,
         });
+        addExtractedImage(base64, file.type || 'image/jpeg', file.name);
       }
     }
     setCurrentFile(null);
@@ -574,6 +653,7 @@ export async function runGeneration(): Promise<void> {
 
   // Step 1: Extracting document content
   try {
+    await addLogLine('Extracting document content…');
     for (const file of _stagedFiles) {
       const lower = file.name.toLowerCase();
       if (lower.endsWith('.pdf')) {
@@ -592,7 +672,9 @@ export async function runGeneration(): Promise<void> {
             mediaType: 'image/jpeg',
             sizeBytes: base64.length * 0.75,
           });
+          addExtractedImage(base64, 'image/jpeg', `Page ${idx + 1}`);
         });
+        await addLogLine(`PDF: ${result.pages.length} page${result.pages.length !== 1 ? 's' : ''} extracted`);
         if (result.truncated) notify(`${file.name}: only first ${result.pages.length} pages processed`, 'info');
       } else if (/\.pptx?$/i.test(lower)) {
         setCurrentFile(file, 'reading slides…');
@@ -602,26 +684,35 @@ export async function runGeneration(): Promise<void> {
           pptxSlides = result.extractedSlides;
         }
         // Also push text for backward-compat fallback
-        textSources.push(...result.slides.map(s => {
-          const heading = s.title ? `## ${s.title}` : '';
-          return [heading, s.body].filter(Boolean).join('\n');
+        textSources.push(...result.extractedSlides.map(s => {
+          const heading  = s.title ? `## ${s.title}` : '';
+          const imgLines = s.imageFilenames.map(fn => `[IMAGE:${fn}]`).join('\n');
+          return [heading, s.body, imgLines].filter(Boolean).join('\n');
         }));
         // Add extracted slide images to the image pool
         for (const img of result.images) {
           images.push({ ...img, sizeBytes: img.base64.length * 0.75 });
+          addExtractedImage(img.base64, img.mediaType, img.filename);
         }
+        await addLogLine(`Presentation: ${result.slides.length} slide${result.slides.length !== 1 ? 's' : ''}${result.images.length ? `, ${result.images.length} images` : ''}`);
       } else if (/\.docx?$/i.test(lower)) {
-        setCurrentFile(file, 'extracting text…');
-        const result = await docxExtract(file);
+        setCurrentFile(file, 'loading…');
+        const result = await docxExtract(file, msg => {
+          const el = document.getElementById('wiz-doc-msg');
+          if (el) el.textContent = msg;
+        });
         if (result.text) textSources.push(result.text);
         for (const img of result.images) {
           images.push({ ...img, sizeBytes: img.base64.length * 0.75 });
+          addExtractedImage(img.base64, img.mediaType, img.filename);
         }
         if (result.tables) tables.push(...result.tables);
+        await addLogLine(`Document extracted${result.images.length ? ` — ${result.images.length} image${result.images.length !== 1 ? 's' : ''}` : ''}`);
       } else if (/\.(txt|md)$/i.test(lower)) {
         setCurrentFile(file, 'reading…');
         const text = await readFileAsText(file);
         textSources.push(text);
+        await addLogLine(`Text file read: ${file.name}`);
       }
     }
     setCurrentFile(null);
@@ -633,40 +724,121 @@ export async function runGeneration(): Promise<void> {
     showRetryButton(); return;
   }
 
-  // Step 2: Analysing structure
-  let blocks: AssembledBlock[];
+  // ── Premium HTML path (Gemini only, DOCX/PDF/TXT — not slides) ─────────────
+  let premiumHtml: string | null = null;
   let pageTitle = 'New Page';
+
+  // Cache of the first analyzeContent call — reused if premium generation falls through to blocks
+  let cachedContentMap: ReturnType<typeof analyzeContent> | null = null;
+
+  if (hasGemini && textSources.length > 0 && !pptxSlides) {
+    // Quick title extraction (no AI needed) — cache for potential block-path fallback
+    cachedContentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
+    pageTitle = cachedContentMap.pageTitle;
+
+    activeStep = 3; // "Enhancing with AI" step
+    renderProgressSteps(activeStep);
+    await addLogLine('Generating premium page with Gemini…', 'hi');
+
+    try {
+      const imagePaths = images.map(img => `assets/${img.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+      premiumHtml = await generateFullPageHTML(textSources.join('\n\n'), pageTitle, imagePaths, getGeminiConfig());
+      if (premiumHtml) {
+        aiEnhanced = true;
+        await addLogLine('Premium HTML page generated ✦', 'ok');
+      } else {
+        await addLogLine('Premium generation unavailable — using standard blocks', 'hi');
+      }
+    } catch {
+      await addLogLine('Premium generation failed — using standard blocks', 'hi');
+    }
+  }
+
+  // ── Premium HTML path: Browser LLM ───────────────────────────────────────────
+  if (!premiumHtml && state.browserLLMEnabled && isBrowserLLMReady()
+      && textSources.length > 0 && !pptxSlides) {
+    if (!cachedContentMap) {
+      cachedContentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
+      pageTitle = cachedContentMap.pageTitle;
+    }
+    activeStep = 3;
+    renderProgressSteps(activeStep);
+    await addLogLine('Generating premium page with browser AI…', 'hi');
+    try {
+      const imagePaths = images.map(img => `assets/${img.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+      premiumHtml = await generatePremiumPageBrowserLLM(
+        cachedContentMap,
+        imagePaths,
+        (msg) => { addLogLine(msg, 'hi').catch(() => {}); },
+      );
+      if (premiumHtml) {
+        aiEnhanced = true;
+        await addLogLine('Premium HTML page generated ✦', 'ok');
+      } else {
+        await addLogLine('Browser AI generation failed — using standard blocks', 'hi');
+      }
+    } catch {
+      await addLogLine('Browser AI generation failed — using standard blocks', 'hi');
+    }
+  }
+
+  // Step 2: Analysing structure (skipped when premiumHtml is set)
+  let blocks: AssembledBlock[] = [];
   try {
+    if (!premiumHtml) await addLogLine('Analysing document structure…');
     if (pptxSlides && pptxSlides.length > 0) {
       // Direct slide-to-block mapping — preserves slide structure
       const result = assembleBlocksFromSlides(pptxSlides, images);
       blocks = result.blocks;
       pageTitle = result.pageTitle;
-    } else {
+      await addLogLine(`Slides mapped to ${blocks.length} sections`);
+    } else if (!premiumHtml) {
       // Generic text-based analysis path (PDF, DOCX, TXT, etc.)
-      let contentMap = analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
+      // Reuse cached result from the premium-path title extraction if available
+      let contentMap = cachedContentMap ?? analyzeContent(textSources, images, tables.length > 0 ? tables : undefined);
       pageTitle = contentMap.pageTitle;
+      await addLogLine(`Found ${contentMap.sections.length} section${contentMap.sections.length !== 1 ? 's' : ''} — "${pageTitle}"`);
 
       if (hasAI) {
         activeStep = 3;
         renderProgressSteps(activeStep);
+        const aiLabel = hasGemini ? 'Gemini' : state.browserLLMEnabled ? 'browser AI' : 'Ollama';
+        await addLogLine(`Validating headings with ${aiLabel}…`, 'hi');
         try {
-          if (state.browserLLMEnabled && isBrowserLLMReady()) {
-            // Prefer in-browser model (no external service required)
+          // Priority: Gemini cloud → browser LLM → Ollama
+          if (hasGemini) {
+            contentMap = await validateHeadingsCloud(contentMap, getGeminiConfig());
+          } else if (state.browserLLMEnabled && isBrowserLLMReady()) {
             contentMap = await validateHeadingsInBrowser(contentMap);
-            aiEnhanced = true;
           } else if (state.ollamaEnabled && state.ollamaEndpoint) {
-            // Fall back to Ollama
             contentMap = await validateHeadings(contentMap, {
               endpoint: state.ollamaEndpoint,
               model:    state.ollamaModel || 'llama3.2:3b',
             });
-            aiEnhanced = true;
           }
-        } catch { /* non-fatal — proceed with original contentMap */ }
+          aiEnhanced = true;
+          await addLogLine('Headings validated', 'ok');
+        } catch { /* non-fatal */ }
       }
 
+      await addLogLine('Assembling page blocks…');
       blocks = assembleBlocks(contentMap, visual.theme);
+
+      // Post-assembly cloud AI polish: hero tagline + section subtitles + long heading fixes.
+      if (hasGemini) {
+        await addLogLine('Polishing content with Gemini…', 'hi');
+        try {
+          blocks = await polishAssembledBlocks(blocks, pageTitle, getGeminiConfig());
+          await addLogLine('Content polished', 'ok');
+        } catch { /* non-fatal */ }
+      } else if (state.browserLLMEnabled && isBrowserLLMReady()) {
+        await addLogLine('Polishing content with browser AI…', 'hi');
+        try {
+          blocks = await polishAssembledBlocksInBrowser(blocks, pageTitle);
+          await addLogLine('Content polished', 'ok');
+        } catch { /* non-fatal */ }
+      }
+      await addLogLine(`${blocks.length} block${blocks.length !== 1 ? 's' : ''} ready`);
     }
     activeStep = S_UPLOAD;
     renderProgressSteps(activeStep);
@@ -692,25 +864,30 @@ export async function runGeneration(): Promise<void> {
         if (isPreviewSWReady()) cacheFileInSW(path, atob(img.base64));
         registerLocalAsset(path, img.mediaType, img.base64);
 
-        setFileUploadStatus(i, 'uploading');
+        setFileUploadStatus(i, 'uploading', safeName, images.length);
         try {
           await uploadFile(path, img.base64, `Add asset ${safeName}`, state.fileShas[path]);
-          setFileUploadStatus(i, 'done');
+          setFileUploadStatus(i, 'done', safeName, images.length);
           uploadedPaths.push(path);
-          // Update the block prefill paths if we renamed the file
-          if (safeName !== img.filename) {
-            const oldRef  = `assets/${img.filename}`;
-            const newRef  = path;
-            blocks = blocks.map(b => {
-              const pf = { ...b.prefill };
-              for (const [k, v] of Object.entries(pf)) {
-                if (v === oldRef) pf[k] = newRef;
-              }
-              return { ...b, prefill: pf };
-            });
+          // Update paths if the file was renamed (deduped or sanitised)
+          const precomputedPath = `assets/${img.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+          if (path !== precomputedPath) {
+            // Fix references in premium HTML
+            if (premiumHtml) premiumHtml = premiumHtml.split(precomputedPath).join(path);
+            // Fix references in standard blocks
+            if (blocks.length > 0) {
+              const oldRef = precomputedPath;
+              blocks = blocks.map(b => {
+                const pf = { ...b.prefill };
+                for (const [k, v] of Object.entries(pf)) {
+                  if (v === oldRef) pf[k] = path;
+                }
+                return { ...b, prefill: pf };
+              });
+            }
           }
         } catch {
-          setFileUploadStatus(i, 'error');
+          setFileUploadStatus(i, 'error', safeName, images.length);
           // non-fatal: page still builds, image just won't be on GitHub yet
         }
       }
@@ -727,6 +904,7 @@ export async function runGeneration(): Promise<void> {
         }
         stagedCount++;
       }
+      if (stagedCount) await addLogLine(`${stagedCount} asset${stagedCount !== 1 ? 's' : ''} staged for upload on Publish`);
     }
     activeStep = S_BUILD;
     renderProgressSteps(activeStep);
@@ -736,9 +914,63 @@ export async function runGeneration(): Promise<void> {
   }
 
   // Step 5: Building page(s)
+  await addLogLine('Building page…');
   try {
     const targetSel = document.getElementById('wizard-target-page') as HTMLSelectElement | null;
     const targetId = targetSel?.value ?? '';
+
+    // ── Premium HTML path: create a single page with rawHtml ──────────────
+    if (premiumHtml) {
+      let page = targetId ? visual.pages.find(p => p.id === targetId) ?? null : null;
+      if (page) {
+        page.blocks = [];
+        delete page.rawHtml;
+        page.rawHtml = premiumHtml;
+        page.dirty = true;
+      } else {
+        page = addEmptyPage(pageTitle, titleToPath(pageTitle, false));
+        page.rawHtml = premiumHtml;
+        page.dirty = true;
+      }
+      visual.activePage = page;
+
+      // Inject a code tab so the HTML is immediately available in the code editor
+      // and the preview SW can serve it without a GitHub round-trip.
+      const staleTabIdx = state.openTabs.findIndex(t => t.path === page!.path);
+      if (staleTabIdx !== -1) state.openTabs.splice(staleTabIdx, 1);
+      state.openTabs.push({ path: page.path, content: premiumHtml, sha: '', dirty: true, language: 'html' });
+      if (isPreviewSWReady()) cacheFileInSW(page.path, premiumHtml);
+      // Set as the active tab so enterCodeMode opens the right file.
+      // Do NOT call activateTab() here — that sets editorEl.style.display='block'
+      // which would flash the code editor while we're still in visual mode.
+      state.activeTab = page.path;
+      renderTabs();
+
+      switchPage(page.id);
+      renderCanvas();
+      renderSectionList();
+      renderPageList();
+
+      activeStep = S_DONE;
+      renderProgressSteps(activeStep);
+      const doneTitle   = document.getElementById('wizard-done-title');
+      const doneSummary = document.getElementById('wizard-done-summary');
+      const doneStats   = document.getElementById('wiz-done-stats');
+      if (doneTitle)   doneTitle.textContent  = `"${pageTitle}" is ready!`;
+      if (doneSummary) doneSummary.textContent = '';
+      if (doneStats) {
+        const chips = [
+          '✦ Premium AI page',
+          ...(uploadedPaths.length ? [`${uploadedPaths.length} assets uploaded`] : []),
+          ...(stagedCount ? [`${stagedCount} assets staged`] : []),
+        ];
+        doneStats.innerHTML = chips.map(c => `<span class="wiz-stat-chip">${c}</span>`).join('');
+      }
+      await addLogLine(`Done — premium HTML page "${pageTitle}"`, 'ok');
+      await sleep(500);
+      showStep('done');
+      return;
+    }
 
     // Try multi-page grouping if no specific target page was selected
     const pageGroups = targetId ? null : groupBlocksIntoPages(blocks, pageTitle);
@@ -779,21 +1011,24 @@ export async function runGeneration(): Promise<void> {
       renderProgressSteps(activeStep);
 
       // Show done step
-      const doneTitle = document.getElementById('wizard-done-title');
+      const doneTitle   = document.getElementById('wizard-done-title');
       const doneSummary = document.getElementById('wizard-done-summary');
-      if (doneTitle) doneTitle.textContent = `${pageGroups.length} pages created!`;
-      if (doneSummary) doneSummary.textContent =
-        `${totalBlocks} sections across ${pageGroups.length} pages` +
-        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}` +
-        `${stagedCount ? `, ${stagedCount} assets staged for upload` : ''}.`;
-
-      showStep('done');
-      if (aiEnhanced) {
-        const badge = document.createElement('p');
-        badge.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:8px';
-        badge.textContent = '✦ Headings validated by Ollama';
-        document.getElementById('wizard-step-done')?.appendChild(badge);
+      const doneStats   = document.getElementById('wiz-done-stats');
+      if (doneTitle)   doneTitle.textContent   = `${pageGroups.length} pages created!`;
+      if (doneSummary) doneSummary.textContent  = '';
+      if (doneStats) {
+        const chips = [
+          `${pageGroups.length} pages`,
+          `${totalBlocks} sections`,
+          ...(uploadedPaths.length ? [`${uploadedPaths.length} assets uploaded`] : []),
+          ...(stagedCount ? [`${stagedCount} assets staged`] : []),
+          ...(aiEnhanced ? ['✦ AI enhanced'] : []),
+        ];
+        doneStats.innerHTML = chips.map(c => `<span class="wiz-stat-chip">${c}</span>`).join('');
       }
+      await addLogLine(`Done — ${pageGroups.length} pages, ${totalBlocks} sections`, 'ok');
+      await sleep(500);
+      showStep('done');
     } else {
       // ── Single-page generation (original behavior) ─────────────────────
       let page = targetId
@@ -836,21 +1071,23 @@ export async function runGeneration(): Promise<void> {
       renderProgressSteps(activeStep);
 
       // Show done step
-      const doneTitle = document.getElementById('wizard-done-title');
+      const doneTitle   = document.getElementById('wizard-done-title');
       const doneSummary = document.getElementById('wizard-done-summary');
-      if (doneTitle)   doneTitle.textContent = `"${pageTitle}" is ready!`;
-      if (doneSummary) doneSummary.textContent =
-        `${blocks.length} sections created` +
-        `${uploadedPaths.length ? `, ${uploadedPaths.length} assets uploaded` : ''}` +
-        `${stagedCount ? `, ${stagedCount} assets staged for upload` : ''}.`;
-
-      showStep('done');
-      if (aiEnhanced) {
-        const badge = document.createElement('p');
-        badge.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:8px';
-        badge.textContent = '✦ Headings validated by Ollama';
-        document.getElementById('wizard-step-done')?.appendChild(badge);
+      const doneStats   = document.getElementById('wiz-done-stats');
+      if (doneTitle)   doneTitle.textContent  = `"${pageTitle}" is ready!`;
+      if (doneSummary) doneSummary.textContent = '';
+      if (doneStats) {
+        const chips = [
+          `${blocks.length} sections`,
+          ...(uploadedPaths.length ? [`${uploadedPaths.length} assets uploaded`] : []),
+          ...(stagedCount ? [`${stagedCount} assets staged`] : []),
+          ...(aiEnhanced ? ['✦ AI enhanced'] : []),
+        ];
+        doneStats.innerHTML = chips.map(c => `<span class="wiz-stat-chip">${c}</span>`).join('');
       }
+      await addLogLine(`Done — "${pageTitle}", ${blocks.length} sections`, 'ok');
+      await sleep(500);
+      showStep('done');
     }
   } catch (e) {
     renderProgressSteps(S_BUILD, (e as Error).message);
@@ -934,7 +1171,9 @@ export function initAssetWizard(): void {
     dropZone.addEventListener('drop', e => {
       e.preventDefault();
       dropZone.classList.remove('wizard-drop-zone--over');
+      dropZone.classList.add('wizard-drop-zone--dropped');
       if (e.dataTransfer?.files) stageFiles(e.dataTransfer.files);
+      setTimeout(() => dropZone.classList.remove('wizard-drop-zone--dropped'), 600);
     });
   }
 
@@ -948,8 +1187,11 @@ export function initAssetWizard(): void {
   document.getElementById('wizard-btn-browse-files')?.addEventListener('click', () => fileInput?.click());
   document.getElementById('wizard-btn-browse-folder')?.addEventListener('click', () => folderInput?.click());
 
-  // Build button
-  document.getElementById('wizard-build-btn')?.addEventListener('click', () => {
+  // Build button — disable immediately on click so there's instant feedback
+  document.getElementById('wizard-build-btn')?.addEventListener('click', e => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.disabled = true;
+    btn.textContent = 'Building…';
     document.getElementById('wizard-retry')!.style.display = 'none';
     void runGeneration();
   });

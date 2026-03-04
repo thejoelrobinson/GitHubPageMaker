@@ -264,8 +264,16 @@ export async function pptxExtract(file: File): Promise<PptxResult> {
 
 // ── DOCX extraction ───────────────────────────────────────────────────────────
 
-export async function docxExtract(file: File): Promise<DocxResult> {
+export async function docxExtract(
+  file: File,
+  onProgress?: (msg: string) => void,
+): Promise<DocxResult> {
+  /** Yield the main thread so the browser can repaint between heavy chunks. */
+  const yield0 = (): Promise<void> => new Promise(r => setTimeout(r, 0));
+
+  onProgress?.('Loading document…');
   const JSZip = await loadJsZip();
+  onProgress?.('Decompressing…');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const zip = await (JSZip as any).loadAsync(await file.arrayBuffer()) as {
     files: Record<string, {
@@ -275,10 +283,32 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     }>;
   };
 
+  onProgress?.('Parsing document XML…');
   const docXml = await zip.files['word/document.xml']?.async('text');
   if (!docXml) return { text: '', images: [] };
 
+  // Build rId → media filename from relationship file
+  const rIdToFilename: Record<string, string> = {};
+  const relsEntry = zip.files['word/_rels/document.xml.rels'];
+  if (relsEntry) {
+    try {
+      const relsXml = await relsEntry.async('text');
+      const relsDoc = new DOMParser().parseFromString(relsXml, 'text/xml');
+      for (const rel of Array.from(relsDoc.querySelectorAll('Relationship'))) {
+        const type   = rel.getAttribute('Type') ?? '';
+        const id     = rel.getAttribute('Id')   ?? '';
+        const target = rel.getAttribute('Target') ?? '';
+        if (/\/image\b/i.test(type) && id && target) {
+          rIdToFilename[id] = target.split('/').pop() ?? '';
+        }
+      }
+    } catch { /* rels unavailable */ }
+  }
+
   const doc = new DOMParser().parseFromString(docXml, 'text/xml');
+  // DOMParser is synchronous and can block for 1-3 s on large documents.
+  // Yield immediately so the browser repaints before the paragraph loop.
+  await yield0();
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   type RunToken = { text: string; bold: boolean; italic: boolean };
@@ -318,8 +348,32 @@ export async function docxExtract(file: File): Promise<DocxResult> {
   }
 
   const metas: DocxParaMeta[] = [];
+  const allParas = Array.from(doc.querySelectorAll('p'));
+  onProgress?.(`Reading ${allParas.length} paragraphs…`);
 
-  for (const p of Array.from(doc.querySelectorAll('p'))) {
+  // Pre-scan: which images appear in each paragraph?
+  const paraImageFilenames: string[][] = allParas.map(p => {
+    const found: string[] = [];
+    for (const drawing of Array.from(p.querySelectorAll('drawing'))) {
+      for (const blip of Array.from(drawing.querySelectorAll('blip'))) {
+        let rId = '';
+        for (const attr of Array.from(blip.attributes)) {
+          if (attr.localName === 'embed') { rId = attr.value; break; }
+        }
+        const fn = rId ? rIdToFilename[rId] : '';
+        if (fn) found.push(fn);
+      }
+    }
+    return found;
+  });
+
+  for (let _pi = 0; _pi < allParas.length; _pi++) {
+    // Yield every 100 paragraphs so the browser can repaint animations
+    if (_pi > 0 && _pi % 100 === 0) {
+      onProgress?.(`Reading paragraphs… ${_pi} / ${allParas.length}`);
+      await yield0();
+    }
+    const p = allParas[_pi];
     const pPr = p.querySelector('pPr');
 
     // ── Official Word heading / list styles ──────────────────────────────────
@@ -485,9 +539,14 @@ export async function docxExtract(file: File): Promise<DocxResult> {
   const paragraphs: string[] = [];
   let breakPending = false;
 
-  for (const m of metas) {
+  for (let mi = 0; mi < metas.length; mi++) {
+    const m = metas[mi];
     if (m.lines.length === 0) {
       if (m.hasBreak) breakPending = true;
+      // Still emit image markers even for empty paragraphs
+      for (const fn of paraImageFilenames[mi] ?? []) {
+        paragraphs.push(`[IMAGE:${fn}]`);
+      }
       continue;
     }
 
@@ -509,6 +568,11 @@ export async function docxExtract(file: File): Promise<DocxResult> {
     }
 
     if (m.hasBreak) breakPending = true;
+
+    // After processing m.lines, emit image markers for this paragraph
+    for (const fn of paraImageFilenames[mi] ?? []) {
+      paragraphs.push(`[IMAGE:${fn}]`);
+    }
   }
 
   // ── Phase 3: parse tables (<w:tbl>) ────────────────────────────────────
@@ -554,6 +618,7 @@ export async function docxExtract(file: File): Promise<DocxResult> {
   }
 
   // Extract embedded images from word/media/*
+  await yield0();
   const mediaTypeMap: Record<string, string> = {
     png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
     gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
@@ -562,6 +627,12 @@ export async function docxExtract(file: File): Promise<DocxResult> {
   const mediaFiles = Object.keys(zip.files).filter(name =>
     /^word\/media\//i.test(name) && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(name),
   );
+  mediaFiles.sort((a, b) => {
+    const na = parseInt(a.match(/\d+/)?.[0] ?? '0', 10);
+    const nb = parseInt(b.match(/\d+/)?.[0] ?? '0', 10);
+    return na - nb;
+  });
+  if (mediaFiles.length) onProgress?.(`Extracting ${mediaFiles.length} image${mediaFiles.length !== 1 ? 's' : ''}…`);
   for (const mediaName of mediaFiles) {
     const ext = mediaName.split('.').pop()?.toLowerCase() ?? 'png';
     const mediaType = mediaTypeMap[ext] ?? 'image/png';

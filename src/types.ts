@@ -40,6 +40,12 @@ export interface Page {
    *  When set, publish uses this instead of the theme-generated head so the
    *  user's custom CSS links, meta tags, etc. survive intact. */
   preservedHead?: string;
+  /** AI-generated premium HTML for the whole page.
+   *  When set, generatePageHTML returns this verbatim (no blocks needed). */
+  rawHtml?: string;
+  /** Inline <style> content extracted from <head> when converting raw HTML to blocks.
+   *  Re-injected into <head> at publish time so the page renders identically. */
+  customCss?: string;
 }
 
 export interface VisualProjectState {
@@ -76,6 +82,7 @@ export interface AppConfig {
   ollamaModel:      string;
   browserLLMEnabled: boolean;
   browserLLMModel:   string;
+  geminiApiKey: string;  // API key from aistudio.google.com/apikey
 }
 
 export interface AppState extends AppConfig {

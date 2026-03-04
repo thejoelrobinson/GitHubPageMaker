@@ -14,7 +14,21 @@ import { uid } from '../utils';
 
 export interface ConvertResult {
   blocks:        Block[];
-  preservedHead: string;   // raw inner HTML of <head> (for re-use at publish)
+  preservedHead: string;   // head HTML with <style> tags stripped
+  inlineCss:     string;   // all <style> content joined (empty string if none)
+}
+
+/**
+ * Extract inline <style> tags from a head HTML string.
+ * Returns the CSS content (joined) and the head with <style> tags removed.
+ */
+export function extractInlineCss(head: string): { css: string; cleanHead: string } {
+  let css = '';
+  const cleanHead = head.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (_, c: string) => {
+    css += c + '\n';
+    return '';
+  });
+  return { css: css.trim(), cleanHead: cleanHead.trim() };
 }
 
 /**
@@ -22,7 +36,8 @@ export interface ConvertResult {
  * Each top-level structural element in <body> becomes one block.
  */
 export function parseHtmlToBlocks(html: string): ConvertResult {
-  const preservedHead = extractHead(html);
+  const rawHead       = extractHead(html);
+  const { css: inlineCss, cleanHead: preservedHead } = extractInlineCss(rawHead);
   const bodyContent   = extractBody(html);
   const sections      = splitIntoSections(bodyContent);
 
@@ -38,7 +53,7 @@ export function parseHtmlToBlocks(html: string): ConvertResult {
       settings: {},
     }));
 
-  return { blocks, preservedHead };
+  return { blocks, preservedHead, inlineCss };
 }
 
 // ── Head / body extraction ────────────────────────────────────────────

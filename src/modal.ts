@@ -1,5 +1,6 @@
 import { state } from './state';
 import { getBrowserLLMStatus } from './visual/browser-llm';
+import { isGeminiReady } from './visual/cloud-llm';
 
 // ── Modal helpers ──────────────────────────────────────────────────────
 
@@ -31,11 +32,14 @@ export function openSettings(tab: 'connect' | 'create' | 'ai' = 'connect'): void
   (document.getElementById('input-branch') as HTMLInputElement).value = state.branch;
 
   if (tab === 'ai') {
+    // Gemini
+    (document.getElementById('input-gemini-api-key') as HTMLInputElement).value = state.geminiApiKey;
+    const verifyEl = document.getElementById('gemini-verify-status');
+    if (verifyEl) verifyEl.textContent = isGeminiReady() ? '✓ API key configured' : '';
+
+    // Browser LLM
     (document.getElementById('input-browser-llm-enabled') as HTMLInputElement).checked = state.browserLLMEnabled;
     (document.getElementById('input-browser-llm-model')   as HTMLSelectElement).value  = state.browserLLMModel;
-    (document.getElementById('input-ollama-enabled')       as HTMLInputElement).checked = state.ollamaEnabled;
-    (document.getElementById('input-ollama-endpoint')      as HTMLInputElement).value   = state.ollamaEndpoint;
-    (document.getElementById('input-ollama-model')         as HTMLInputElement).value   = state.ollamaModel;
     const llmStatus = getBrowserLLMStatus();
     const llmStatusEl = document.getElementById('browser-llm-modal-status');
     if (llmStatusEl) {
@@ -44,8 +48,13 @@ export function openSettings(tab: 'connect' | 'create' | 'ai' = 'connect'): void
                               : llmStatus === 'error'       ? '✗ Failed to load'
                               : '';
     }
-    const probeEl  = document.getElementById('ollama-probe-status');
-    if (probeEl)  probeEl.textContent  = '';
+
+    // Ollama
+    (document.getElementById('input-ollama-enabled')  as HTMLInputElement).checked = state.ollamaEnabled;
+    (document.getElementById('input-ollama-endpoint') as HTMLInputElement).value   = state.ollamaEndpoint;
+    (document.getElementById('input-ollama-model')    as HTMLInputElement).value   = state.ollamaModel;
+    const probeEl = document.getElementById('ollama-probe-status');
+    if (probeEl) probeEl.textContent = '';
   }
 
   switchModalTab(tab);

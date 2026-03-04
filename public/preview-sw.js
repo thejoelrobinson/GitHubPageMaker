@@ -36,32 +36,58 @@ function openIDB() {
   });
 }
 
-async function getFromIDB(filePath) {
-  if (!cfg) return null;
+// ── IDB helpers ────────────────────────────────────────────────────────
+
+/** Fire-and-forget write: open IDB then run fn(db), swallowing errors. */
+function idbWrite(fn) {
+  openIDB().then(fn).catch(() => {});
+}
+
+/** Resolve-on-completion readonly get by raw key; resolves null on any error. */
+async function idbGet(key) {
   try {
     const db = await openIDB();
-    const id = `${cfg.owner}/${cfg.repo}/${cfg.branch}/${filePath}`;
     return new Promise((resolve) => {
-      const tx = db.transaction('files', 'readonly');
-      const req = tx.objectStore('files').get(id);
+      const req = db.transaction('files', 'readonly').objectStore('files').get(key);
       req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => resolve(null);
+      req.onerror  = () => resolve(null);
     });
-  } catch {
-    return null;
-  }
+  } catch { return null; }
+}
+
+async function getFromIDB(filePath) {
+  if (!cfg) return null;
+  return idbGet(`${cfg.owner}/${cfg.repo}/${cfg.branch}/${filePath}`);
 }
 
 function storeInIDB(filePath, content, isTextAsset) {
   if (!cfg) return;
-  openIDB().then(db => {
-    const id = `${cfg.owner}/${cfg.repo}/${cfg.branch}/${filePath}`;
-    const tx = db.transaction('files', 'readwrite');
-    tx.objectStore('files').put({
-      id, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch,
-      path: filePath, sha: '', content, isText: isTextAsset, cachedAt: Date.now(),
-    });
-  }).catch(() => {});
+  const id = `${cfg.owner}/${cfg.repo}/${cfg.branch}/${filePath}`;
+  idbWrite(db => db.transaction('files', 'readwrite').objectStore('files').put(
+    { id, owner: cfg.owner, repo: cfg.repo, branch: cfg.branch,
+      path: filePath, sha: '', content, isText: isTextAsset, cachedAt: Date.now() },
+  ));
+}
+
+// ── Persisted config (survives SW restart) ────────────────────────────
+
+const CFG_IDB_KEY = '__wb_config__';
+
+function persistConfig(cfgObj) {
+  idbWrite(db => db.transaction('files', 'readwrite').objectStore('files').put(
+    { id: CFG_IDB_KEY, token: cfgObj.token, owner: cfgObj.owner, repo: cfgObj.repo, branch: cfgObj.branch },
+  ));
+}
+
+function clearPersistedConfig() {
+  idbWrite(db => db.transaction('files', 'readwrite').objectStore('files').delete(CFG_IDB_KEY));
+}
+
+async function restoreConfigFromIDB() {
+  const row = await idbGet(CFG_IDB_KEY);
+  return row && row.token
+    ? { token: row.token, owner: row.owner, repo: row.repo, branch: row.branch }
+    : null;
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────
@@ -86,6 +112,7 @@ self.addEventListener('message', (event) => {
     case 'WB_CONFIG':
       cfg = { token: data.token, owner: data.owner, repo: data.repo, branch: data.branch };
       // Don't clear fileStore here — openTabs content may already be cached
+      persistConfig(cfg); // survive SW restart
       break;
     case 'WB_CACHE_FILE':
       if (data.path && data.content != null) {
@@ -100,6 +127,7 @@ self.addEventListener('message', (event) => {
     case 'WB_CLEAR':
       fileStore.clear();
       cfg = null;
+      clearPersistedConfig();
       idb = null; // Force re-open on next use (new branch will have different keys)
       break;
     // Respond to ping so the client can confirm the SW is alive and configured
@@ -157,18 +185,23 @@ async function handlePreviewRequest(pathname) {
 
   // 3. Fetch from GitHub API
   if (!cfg) {
-    // No config yet — return a self-reloading placeholder so the iframe
-    // retries once the main page sends WB_CONFIG.
-    // Use a 5-second refresh instead of 1 to avoid a tight reload loop
-    // if WB_CONFIG delivery is delayed.
-    return new Response(
-      `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="5"></head>
-       <body style="background:#0f172a;display:flex;align-items:center;justify-content:center;
-         height:100vh;font-family:system-ui;color:#64748b">
-         <span>Loading repository assets…</span>
-       </body></html>`,
-      { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
-    );
+    // SW restarted and lost in-memory config — try to restore from IDB first.
+    // This avoids the loading placeholder on SW restart (common in all browsers).
+    const restored = await restoreConfigFromIDB();
+    if (restored) {
+      cfg = restored;
+    } else {
+      // No config anywhere — return a self-reloading placeholder so the iframe
+      // retries once the main page sends WB_CONFIG.
+      return new Response(
+        `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="5"></head>
+         <body style="background:#0f172a;display:flex;align-items:center;justify-content:center;
+           height:100vh;font-family:system-ui;color:#64748b">
+           <span>Loading repository assets…</span>
+         </body></html>`,
+        { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+      );
+    }
   }
 
   try {

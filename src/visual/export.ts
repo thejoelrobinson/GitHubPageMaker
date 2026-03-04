@@ -114,6 +114,49 @@ const NAV_SCRIPT = `<script>
 })();
 </script>`;
 
+// ── Polish layer — always included in published (non-editing) HTML ──────────
+
+const POLISH_CSS = `
+#wb-progress{position:fixed;top:0;left:0;height:3px;width:0%;background:var(--accent);z-index:9999;transition:width .1s linear;pointer-events:none}
+nav{transition:background .25s ease,box-shadow .25s ease}
+.ws-nav-scrolled{backdrop-filter:blur(12px) saturate(160%)!important;-webkit-backdrop-filter:blur(12px) saturate(160%)!important;background:rgba(var(--wb-nav-rgb,255,255,255),.85)!important;box-shadow:0 1px 14px rgba(0,0,0,.13)!important}
+.wb-feat-card{transition:transform .22s ease,box-shadow .22s ease;border-left:3px solid var(--accent)!important}
+.wb-feat-card:hover{transform:translateY(-4px);box-shadow:0 12px 36px rgba(0,0,0,.13)!important}
+.wb-stat-card{background:var(--bg-alt);border-radius:var(--radius);padding:28px 16px;transition:transform .22s ease,box-shadow .22s ease}
+.wb-stat-card:hover{transform:translateY(-3px);box-shadow:0 8px 28px rgba(0,0,0,.1)}
+.wb-stat-num{color:var(--accent)!important;font-weight:800!important}
+html.wb-polished .wb-stagger>.wb-stag-item{opacity:0;transform:translateY(20px);transition:opacity .55s ease,transform .55s ease}
+html.wb-polished .wb-stagger>.wb-stag-item:nth-child(1){transition-delay:0ms}
+html.wb-polished .wb-stagger>.wb-stag-item:nth-child(2){transition-delay:80ms}
+html.wb-polished .wb-stagger>.wb-stag-item:nth-child(3){transition-delay:160ms}
+html.wb-polished .wb-stagger>.wb-stag-item:nth-child(4){transition-delay:240ms}
+html.wb-polished .wb-stagger.wb-stag-fired>.wb-stag-item{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){html.wb-polished .wb-stagger>.wb-stag-item{opacity:1!important;transform:none!important;transition:none!important}}
+html.wb-polished .wb-hero-seq>*{opacity:0;transform:translateY(26px);transition:opacity .65s ease,transform .65s ease}
+html.wb-polished .wb-hero-seq>*:nth-child(1){transition-delay:60ms}
+html.wb-polished .wb-hero-seq>*:nth-child(2){transition-delay:220ms}
+html.wb-polished .wb-hero-seq>*:nth-child(3){transition-delay:380ms}
+html.wb-polished .wb-hero-seq.wb-hero-fired>*{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){html.wb-polished .wb-hero-seq>*{opacity:1!important;transform:none!important;transition:none!important}}
+html.wb-polished section,html.wb-polished footer{opacity:0;transform:translateY(14px);transition:opacity .55s ease,transform .55s ease}
+html.wb-polished section.wb-sec-vis,html.wb-polished footer.wb-sec-vis{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){html.wb-polished section,html.wb-polished footer{opacity:1!important;transform:none!important;transition:none!important}}`;
+
+const POLISH_SCRIPT = `<script>(function(){
+var rm=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+document.documentElement.classList.add('wb-polished');
+var bar=document.getElementById('wb-progress');
+if(bar&&!rm)window.addEventListener('scroll',function(){var s=document.documentElement,t=s.scrollHeight-s.clientHeight;if(t>0)bar.style.width=Math.min(s.scrollTop/t*100,100).toFixed(1)+'%';},{passive:true});
+var nav=document.querySelector('nav');
+if(nav){var bg=window.getComputedStyle(nav).backgroundColor,m=bg.match(/\d+/g);if(m&&m.length>=3)nav.style.setProperty('--wb-nav-rgb',m[0]+','+m[1]+','+m[2]);if(!rm)window.addEventListener('scroll',function(){nav.classList.toggle('ws-nav-scrolled',window.scrollY>20);},{passive:true});}
+var secs=document.querySelectorAll('section,footer');
+if(secs.length&&!rm&&'IntersectionObserver' in window){var sio=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('wb-sec-vis');sio.unobserve(e.target);}});},{threshold:0.05,rootMargin:'0px 0px -20px 0px'});secs.forEach(function(el){if(el.getBoundingClientRect().top<window.innerHeight)el.classList.add('wb-sec-vis');else sio.observe(el);});setTimeout(function(){secs.forEach(function(el){el.classList.add('wb-sec-vis');});},4000);}else secs.forEach(function(el){el.classList.add('wb-sec-vis');});
+var grids=document.querySelectorAll('.wb-stagger');
+if(grids.length&&!rm&&'IntersectionObserver' in window){var gio=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('wb-stag-fired');gio.unobserve(e.target);}});},{threshold:0.1});grids.forEach(function(g){if(g.getBoundingClientRect().top<window.innerHeight)g.classList.add('wb-stag-fired');else gio.observe(g);});}else grids.forEach(function(g){g.classList.add('wb-stag-fired');});
+var hseq=document.querySelector('.wb-hero-seq');
+if(hseq&&!hseq.closest('[data-wb-anim]')){if(rm)hseq.classList.add('wb-hero-fired');else requestAnimationFrame(function(){setTimeout(function(){hseq.classList.add('wb-hero-fired');},30);});}
+})();</script>`;
+
 function googleFontsUrl(theme: Theme): string {
   const fonts = new Set([theme.headingFont, theme.bodyFont]);
   const params = [...fonts]
@@ -257,6 +300,7 @@ body.wb-block-drop-empty::after {
   min-height:200px; color:rgba(0,120,212,.7); font-size:16px; font-weight:600;
   font-family:system-ui,sans-serif;
 }
+
 /* ── Animation preview (fired by wb:replayAnim) ──────────────────────
    Uses data-wb-anim-preview so it never clashes with published data-wb-anim.
    CSS custom props --wb-anim-dur/delay/ease are set inline by the JS handler. */
@@ -880,21 +924,40 @@ if(!hasBlocks){
   // ══════════════════════════════════════════════
   var customEditEl = null, customEditBid = null;
 
-  // Convert an editable element's innerHTML back to markdown for storage.
-  // Handles bold/italic from both typing and toolbar (execCommand may emit <b>/<i>).
-  function htmlToMd(html){
-    return html
-      .replace(/<strong>([\s\S]*?)<\/strong>/gi,'**$1**')
-      .replace(/<b>([\s\S]*?)<\/b>/gi,'**$1**')
-      .replace(/<em>([\s\S]*?)<\/em>/gi,'*$1*')
-      .replace(/<i>([\s\S]*?)<\/i>/gi,'*$1*')
-      .replace(/<br\s*\/?>/gi,'\n')
-      .replace(/<\/p>/gi,'\n').replace(/<p[^>]*>/gi,'')
-      .replace(/<\/div>/gi,'\n').replace(/<div[^>]*>/gi,'')
-      .replace(/<[^>]+>/g,'')
-      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&nbsp;/g,' ').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
-      .replace(/\n{3,}/g,'\n\n')
-      .trim();
+  // Convert an editable element's innerHTML to clean rich HTML for storage.
+  // Preserves bold/italic/underline/color/font spans; strips dangerous content.
+  function cleanRichHtml(html){
+    var s=html;
+    s=s.replace(/ contenteditable="[^"]*"/gi,'');
+    s=s.replace(/ class="vc-text(?:\s[^"]*)?"?/gi,'');
+    s=s.replace(/ tabindex="-?\d+"/gi,'');
+    s=s.replace(/ data-wb-placeholder="[^"]*"/gi,'');
+    s=s.replace(/<br\s*\/?>/gi,'<br>');
+    s=s.replace(/<\/p>/gi,'<br>').replace(/<p[^>]*>/gi,'');
+    s=s.replace(/<\/div>/gi,'<br>').replace(/<div[^>]*>/gi,'');
+    s=s.replace(/<b\b(?:\s[^>]*)?>/gi,'<strong>').replace(/<\/b>/gi,'</strong>');
+    s=s.replace(/<i\b(?:\s[^>]*)?>/gi,'<em>').replace(/<\/i>/gi,'</em>');
+    s=s.replace(/<s\b(?:\s[^>]*)?>/gi,'<del>').replace(/<\/s>/gi,'</del>');
+    s=s.replace(/<strike[^>]*>/gi,'<del>').replace(/<\/strike>/gi,'</del>');
+    s=s.replace(/<font([^>]*)>/gi,function(m,a){
+      var st='';
+      var c=a.match(/color=["']?([^"'\s>]+)/i);
+      var f=a.match(/face=["']([^"']+)["']/i);
+      if(c)st+='color:'+c[1]+';';
+      if(f)st+='font-family:'+f[1]+';';
+      return st?'<span style="'+st+'">':'';
+    });
+    s=s.replace(/<\/font>/gi,'</span>');
+    s=s.replace(/<\/strong>\s*<strong>/gi,'');
+    s=s.replace(/<\/em>\s*<em>/gi,'');
+    s=s.replace(/<script[\s\S]*?<\/script>/gi,'');
+    s=s.replace(/<iframe[\s\S]*?<\/iframe>/gi,'');
+    s=s.replace(/ on\w+="[^"]*"/gi,'');
+    s=s.replace(/javascript:/gi,'');
+    s=s.replace(/(<br>\s*){3,}/gi,'<br><br>');
+    s=s.replace(/(<br>)+$/i,'');
+    s=s.replace(/<span[^>]*>\s*<\/span>/gi,'');
+    return s.trim();
   }
 
   // Make every [data-field] immediately contenteditable so clicking
@@ -914,12 +977,103 @@ if(!hasBlocks){
   }
   activateFields();
 
-  // Save a field whenever it loses focus — convert innerHTML back to markdown
+  // ── Rich text: report selection to parent toolbar (postMessage) ─────────
+  function getSelField(){
+    var sel=window.getSelection();
+    if(!sel||!sel.anchorNode)return null;
+    var n=sel.anchorNode.nodeType===1?sel.anchorNode:sel.anchorNode.parentNode;
+    return n&&n.closest?n.closest('[data-field]'):null;
+  }
+
+  // Saved range + field — restored in wb:richCmd so execCommand works even when
+  // the iframe temporarily loses focus from a parent toolbar click.
+  var _lastRange=null;
+  var _lastField=null;
+
+  function sendSelState(){
+    if(interactMode){P.postMessage({type:'wb:richSel',active:false},'*');return;}
+    // Show toolbar whenever any [data-field] has focus (cursor or selection).
+    var ae=document.activeElement;
+    var inField=ae&&ae.dataset&&ae.dataset.field;
+    if(!inField){P.postMessage({type:'wb:richSel',active:false},'*');return;}
+    _lastField=ae;  // always save the focused field
+    var sel=window.getSelection();
+    // Save range for BOTH collapsed cursor and text selection — restores cursor
+    // position so execCommand applies at the right spot.
+    if(sel&&sel.rangeCount) _lastRange=sel.getRangeAt(0).cloneRange();
+    // Positioning: above selection if one exists, otherwise above the field center.
+    var rect;
+    if(sel&&!sel.isCollapsed&&sel.rangeCount&&getSelField()){
+      var r=sel.getRangeAt(0).getBoundingClientRect();
+      if(r.width||r.height) rect={top:r.top,left:r.left,width:r.width,height:r.height};
+    }
+    if(!rect){
+      var fr=ae.getBoundingClientRect();
+      rect={top:fr.top,left:fr.left,width:fr.width,height:0};
+    }
+    P.postMessage({
+      type:'wb:richSel',active:true,rect:rect,
+      bold:document.queryCommandState('bold'),
+      italic:document.queryCommandState('italic'),
+      underline:document.queryCommandState('underline'),
+      strikeThrough:document.queryCommandState('strikeThrough'),
+    },'*');
+  }
+
+  // Apply inline style span to current selection (used by wb:richCmd)
+  function applySpanStyle(prop,val){
+    var sel=window.getSelection();
+    if(!sel||sel.isCollapsed||!sel.rangeCount)return;
+    var range=sel.getRangeAt(0).cloneRange();
+    var span=document.createElement('span');
+    span.style[prop]=val;
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    sel.removeAllRanges();
+    var nr=document.createRange();
+    nr.selectNodeContents(span);
+    sel.addRange(nr);
+  }
+
+  // Show toolbar on click/focus into any editable field.
+  document.addEventListener('focusin',function(e){
+    if(e.target&&e.target.dataset&&e.target.dataset.field){
+      _lastField=e.target;  // save immediately so wb:richCmd can use it
+      setTimeout(sendSelState,0);
+    }
+  });
+  // Hide toolbar when focus leaves all fields (delayed so toolbar clicks can fire first).
+  var _blurTimer=null;
+  document.addEventListener('focusout',function(e){
+    if(e.target&&e.target.dataset&&e.target.dataset.field){
+      clearTimeout(_blurTimer);
+      _blurTimer=setTimeout(function(){
+        var ae2=document.activeElement;
+        if(!ae2||!ae2.dataset||!ae2.dataset.field){
+          P.postMessage({type:'wb:richSel',active:false},'*');
+        }
+      },200);
+    }
+  });
+  // Reposition on selection change (text drag / keyboard).
+  var selStateTimer=null;
+  document.addEventListener('selectionchange',function(){
+    clearTimeout(selStateTimer);
+    selStateTimer=setTimeout(sendSelState,10);
+  });
+  document.addEventListener('mousedown',function(e){
+    if(!e.target.closest('[data-field]')){
+      P.postMessage({type:'wb:richSel',active:false},'*');
+    }
+  });
+  // ── End rich text reporting ─────────────────────────────────────────────
+
+  // Save a field whenever it loses focus — clean and preserve rich HTML
   document.addEventListener('blur',function(e){
     var f=e.target;
     if(!f||!f.dataset||!f.dataset.field)return;
     var bid=f.dataset.blockId;
-    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:htmlToMd(f.innerHTML)},'*');
+    if(bid)P.postMessage({type:'wb:textSave',blockId:bid,field:f.dataset.field,value:cleanRichHtml(f.innerHTML)},'*');
   },true);
 
   document.addEventListener('click',function(e){
@@ -945,18 +1099,46 @@ if(!hasBlocks){
     // handles cursor placement naturally (prevents Safari/Chrome cursor loss).
     var field=e.target.closest('[data-field]');
     if(field){
-      field.focus();
-      var sel=window.getSelection();
-      if(sel){
-        var range=null;
-        if(document.caretRangeFromPoint){
-          range=document.caretRangeFromPoint(e.clientX,e.clientY);
-        }else if(document.caretPositionFromPoint){
-          var cpos=document.caretPositionFromPoint(e.clientX,e.clientY);
-          if(cpos){range=document.createRange();range.setStart(cpos.offsetNode,cpos.offset);range.collapse(true);}
+      var preDragSel=window.getSelection();
+      var hasDragSel=preDragSel&&!preDragSel.isCollapsed;
+      // When the user drag-selected text, skip focus() entirely — calling
+      // focus() on a contenteditable with an active selection silently collapses
+      // it in Chrome/Safari, which would prevent the rich toolbar from showing.
+      if(!hasDragSel){
+        field.focus();
+        var sel=window.getSelection();
+        if(sel&&sel.isCollapsed){
+          var range=null;
+          if(document.caretRangeFromPoint){
+            range=document.caretRangeFromPoint(e.clientX,e.clientY);
+          }else if(document.caretPositionFromPoint){
+            var cpos=document.caretPositionFromPoint(e.clientX,e.clientY);
+            if(cpos){range=document.createRange();range.setStart(cpos.offsetNode,cpos.offset);range.collapse(true);}
+          }
+          if(range){sel.removeAllRanges();sel.addRange(range);}
         }
-        if(range){sel.removeAllRanges();sel.addRange(range);}
       }
+      // Belt-and-suspenders: send toolbar state from click handler directly
+      // using the field reference, bypassing document.activeElement checks.
+      (function(f){
+        setTimeout(function(){
+          if(interactMode)return;
+          var fr=f.getBoundingClientRect();
+          var csel=window.getSelection();
+          var tr;
+          if(csel&&!csel.isCollapsed&&csel.rangeCount){
+            var cr=csel.getRangeAt(0).getBoundingClientRect();
+            if(cr.width||cr.height) tr={top:cr.top,left:cr.left,width:cr.width,height:cr.height};
+          }
+          if(!tr) tr={top:fr.top,left:fr.left,width:fr.width,height:0};
+          P.postMessage({type:'wb:richSel',active:true,rect:tr,
+            bold:document.queryCommandState('bold'),
+            italic:document.queryCommandState('italic'),
+            underline:document.queryCommandState('underline'),
+            strikeThrough:document.queryCommandState('strikeThrough'),
+          },'*');
+        },0);
+      })(field);
     }
 
     // Select the block for the properties panel
@@ -1000,6 +1182,40 @@ if(!hasBlocks){
       document.body.classList.toggle('wb-interact',interactMode);
       if(interactMode){endCustomEdit();deactivateFields();}
       else{activateFields();}
+    }
+    if(e.data.type==='wb:richCmd'){
+      // Re-focus the saved field first, then restore the saved selection range.
+      // Both steps are required: focus() activates the document, addRange() restores
+      // the selection so execCommand / applySpanStyle have something to act on.
+      if(_lastField&&typeof _lastField.focus==='function') _lastField.focus();
+      if(_lastRange){
+        var csel=window.getSelection();
+        try{if(csel){csel.removeAllRanges();csel.addRange(_lastRange.cloneRange());}}catch(ex){}
+      }
+      var cmd=e.data.cmd;
+      if(cmd==='bold'||cmd==='italic'||cmd==='underline'||cmd==='strikeThrough'){
+        document.execCommand(cmd,false,null);
+      }else if(cmd==='foreColor'&&e.data.value){
+        document.execCommand('foreColor',false,e.data.value);
+      }else if(cmd==='fontFamily'&&e.data.value){
+        applySpanStyle('fontFamily',e.data.value==='inherit'?'':e.data.value);
+      }else if(cmd==='fontSize'&&e.data.value){
+        applySpanStyle('fontSize',e.data.value);
+      }else if(cmd==='removeFormat'){
+        document.execCommand('removeFormat',false,null);
+        var sel2=window.getSelection();
+        if(sel2&&sel2.rangeCount){
+          var rng2=sel2.getRangeAt(0);
+          var anc2=rng2.commonAncestorContainer;
+          if(anc2.nodeType===3)anc2=anc2.parentNode;
+          anc2.querySelectorAll('span[style]').forEach(function(sp){
+            var p2=sp.parentNode;
+            while(sp.firstChild)p2.insertBefore(sp.firstChild,sp);
+            p2.removeChild(sp);
+          });
+        }
+      }
+      setTimeout(sendSelState,0);
     }
     if(e.data.type==='wb:replayAnim'){
       var animEl=document.querySelector('[data-block-id="'+e.data.blockId+'"]');
@@ -1211,6 +1427,12 @@ function buildPageHTML(
   siteDesc: string,
   editing: boolean,
 ): string {
+  // ── Premium AI-generated HTML shortcut ──────────────────────────────────────
+  if (page.rawHtml) {
+    if (editing) return injectEditingLayer(page.rawHtml, page.path);
+    return page.rawHtml;
+  }
+
   const total     = page.blocks.length;
   const hasAnims  = !editing && page.blocks.some(
     b => b.settings.animIn && b.settings.animIn !== 'none',
@@ -1227,7 +1449,12 @@ function buildPageHTML(
   // so the user's CSS links, meta tags, favicon, etc. survive unchanged.
   if (page.preservedHead) {
     // Inject editing layer into the preserved head when in editing mode
-    const headExtra = editingStyles + (hasAnims ? `<style>${SECTION_ANIM_CSS}</style>` : '');
+    const customCssTag = page.customCss ? `<style>${page.customCss}</style>` : '';
+    const headExtra = editingStyles
+      + customCssTag
+      + (hasAnims ? `<style>${SECTION_ANIM_CSS}</style>` : '')
+      + (editing ? '' : `<style>${POLISH_CSS}</style>`);
+    const progressBar = editing ? '' : '<div id="wb-progress" aria-hidden="true"></div>\n';
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1235,9 +1462,10 @@ ${page.preservedHead}
 ${headExtra}
 </head>
 <body>
-${blocksHtml}
+${progressBar}${blocksHtml}
 ${editingBody}
 ${hasAnims ? SECTION_ANIM_SCRIPT : ''}
+${editing ? '' : POLISH_SCRIPT}
 </body>
 </html>`;
   }
@@ -1269,15 +1497,17 @@ ${editingStyles}
 ${UTILITY_CSS}
 ${RESPONSIVE_NAV_CSS}
 ${themeCSS(theme)}
+${editing ? '' : POLISH_CSS}
 ${hasAnims ? SECTION_ANIM_CSS : ''}
 </style>
 <base href="${base}">
 </head>
 <body>
-${emptyPlaceholder}${blocksHtml}
+${editing ? '' : '<div id="wb-progress" aria-hidden="true"></div>\n'}${emptyPlaceholder}${blocksHtml}
 ${editingBody}
 ${NAV_SCRIPT}
 ${hasAnims ? SECTION_ANIM_SCRIPT : ''}
+${editing ? '' : POLISH_SCRIPT}
 </body>
 </html>`;
 }

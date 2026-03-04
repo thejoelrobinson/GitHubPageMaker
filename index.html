@@ -20,7 +20,7 @@
       <p class="wc-desc">Start from a document, use a template, or connect to GitHub to edit an existing site.</p>
 
       <div class="wc-actions">
-        <button class="wc-action-btn" id="overlay-import-btn">
+        <button class="wc-action-btn wc-action-btn--primary" id="overlay-import-btn">
           <span class="wc-action-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="26" height="26"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15M9 12l3 3m0 0 3-3m-3 3V2.25"/></svg>
           </span>
@@ -104,7 +104,7 @@
   <div id="mode-action-bar">
     <!-- Visual mode tools — replaces vis-toolbar, shown only in Visual mode -->
     <div id="vis-mode-tools" style="display:none;align-items:center;gap:4px">
-      <div style="display:flex;gap:2px;background:rgba(0,0,0,.2);border-radius:4px;padding:2px">
+      <div class="mab-group">
         <button class="device-btn" id="vis-undo-btn" disabled title="Undo (⌘Z)">
           <svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M1.22 6.28a.749.749 0 0 0 0 1.06l3.5 3.5a.749.749 0 1 0 1.06-1.06L3.31 7.34h6.19A4.5 4.5 0 0 1 14 11.84v.66a.75.75 0 0 0 1.5 0v-.66a6 6 0 0 0-6-6H3.31l2.47-2.47a.749.749 0 1 0-1.06-1.06l-3.5 3.5Z"/></svg>
         </button>
@@ -113,14 +113,14 @@
         </button>
       </div>
       <div class="mab-sep"></div>
-      <div style="display:flex;gap:2px;background:rgba(0,0,0,.2);border-radius:4px;padding:2px">
+      <div class="mab-group">
         <button class="device-btn" id="tool-edit" style="width:auto;padding:0 8px;gap:4px" title="Preview — toggle preview mode to see the page as visitors will">
           <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M3 2.75a.75.75 0 0 1 1.2-.6l8 5.25a.75.75 0 0 1 0 1.2l-8 5.25A.75.75 0 0 1 3 13.25v-10.5Z"/></svg>
           <span class="tool-btn-label">Preview</span>
         </button>
       </div>
       <div class="mab-sep"></div>
-      <div style="display:flex;gap:2px;background:rgba(0,0,0,.2);border-radius:4px;padding:2px">
+      <div class="mab-group">
         <button class="device-btn active" id="dev-desktop" title="Desktop (1200px)">
           <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2h12.5c.966 0 1.75.784 1.75 1.75v6.5A1.75 1.75 0 0 1 14.25 12H9.5v1.5h2a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1 0-1.5h2V12H1.75A1.75 1.75 0 0 1 0 10.25v-6.5C0 2.784.784 2 1.75 2Z"/></svg>
         </button>
@@ -143,31 +143,25 @@
       </button>
     </div>
     <!-- Spacer pushes right-side buttons to the end -->
-    <div style="flex:1"></div>
-    <!-- Code mode: Save draft + Commit & Push -->
-    <div id="code-action-group" style="display:none;align-items:center;gap:6px">
-      <button class="btn btn-secondary" id="code-save-btn">
-        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.97a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.97Z"/></svg>
-        Save Draft
-      </button>
-      <button class="btn btn-primary" id="save-btn">
-        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 14H1.75A1.75 1.75 0 0 1 0 12.25V3.75Z"/></svg>
-        Commit &amp; Push
-      </button>
-    </div>
+    <div class="mab-spacer"></div>
     <!-- Shared draft status indicator (both modes) -->
     <span id="draft-status" class="draft-status draft-status--idle">
       <span class="draft-dot"></span>All saved
     </span>
-    <!-- Visual mode: Save draft + Publish to GitHub -->
-    <div id="vis-action-group" style="display:none;align-items:center;gap:6px">
-      <button class="btn btn-secondary" id="vis-save-btn">
+    <!-- Unified action group: Download + Save Draft + Push to GitHub (both modes) -->
+    <div id="action-group" style="display:none" class="mab-action-group">
+      <button class="btn btn-ghost" id="action-download-btn" title="Download site as ZIP">
+        <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M8.75 1.75a.75.75 0 0 0-1.5 0V8.44L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V1.75ZM1.5 12.75a.75.75 0 0 1 .75-.75h11.5a.75.75 0 0 1 0 1.5H2.25a.75.75 0 0 1-.75-.75Z"/></svg>
+        Download
+      </button>
+      <div class="mab-sep"></div>
+      <button class="btn btn-secondary" id="action-save-btn">
         <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.75 14A1.75 1.75 0 0 1 1 12.25v-2.5a.75.75 0 0 1 1.5 0v2.5c0 .138.112.25.25.25h10.5a.25.25 0 0 0 .25-.25v-2.5a.75.75 0 0 1 1.5 0v2.5A1.75 1.75 0 0 1 13.25 14ZM7.25 7.689V2a.75.75 0 0 1 1.5 0v5.689l1.97-1.97a.749.749 0 1 1 1.06 1.06l-3.25 3.25a.749.749 0 0 1-1.06 0L4.22 6.78a.749.749 0 1 1 1.06-1.06l1.97 1.97Z"/></svg>
         Save Draft
       </button>
-      <button class="btn btn-primary" id="vis-publish-btn">
-        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.442a.25.25 0 0 1 .379-.215Z"/></svg>
-        Publish to GitHub
+      <button class="btn btn-primary" id="action-push-btn">
+        <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75H4.5a2.5 2.5 0 0 1 0-5h8.25V1.5H4.5a1 1 0 0 0 0 2H13a.75.75 0 0 1 0 1.5H4.5A2.5 2.5 0 0 1 2 2.5Z"/></svg>
+        Push to GitHub
       </button>
     </div>
   </div>
@@ -257,7 +251,11 @@
           </div>
         </div>
         <div id="file-tree">
-          <div class="tree-loading" id="tree-placeholder">Connect a GitHub repository to start editing.</div>
+          <div class="tree-empty-state" id="tree-placeholder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" width="36" height="36"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v8.25m19.5 0v5.25A2.25 2.25 0 0 1 19.5 21.75h-15A2.25 2.25 0 0 1 2.25 19.5V12"/></svg>
+            <span class="tree-empty-title">No repository connected</span>
+            <span class="tree-empty-sub">Connect a GitHub repo to browse and edit files</span>
+          </div>
         </div>
         <div id="sidebar-preview" class="hidden">
           <div class="sidebar-preview-header">
@@ -292,7 +290,11 @@
         <div id="welcome">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5"/></svg>
           <h2>Code Editor</h2>
-          <p>Open a file from the Explorer panel, or switch to Visual mode to start designing.</p>
+          <p>Open a file from the Explorer panel, or create a new file to start coding.</p>
+          <button class="btn btn-secondary" id="btn-new-file" style="margin-top:12px">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M7.75 2a.75.75 0 0 1 .75.75V7h4.25a.75.75 0 0 1 0 1.5H8.5v4.25a.75.75 0 0 1-1.5 0V8.5H2.75a.75.75 0 0 1 0-1.5H7V2.75A.75.75 0 0 1 7.75 2Z"/></svg>
+            New File
+          </button>
         </div>
         <div id="editor" style="display:none"></div>
         <div id="file-preview" style="display:none">
@@ -353,7 +355,7 @@
       <span id="status-ai-text">✦ AI</span>
     </div>
     <div id="status-right">
-      <div class="status-item status-code-only" id="status-lang">Plain Text</div>
+      <div class="status-item status-code-only status-item--accent" id="status-lang">Plain Text</div>
       <div class="status-item status-code-only" id="status-pos">Ln 1, Col 1</div>
       <div class="status-item" id="status-changes">No changes</div>
     </div>
@@ -414,6 +416,33 @@
 
     <!-- AI section -->
     <div id="modal-ai-section" style="display:none">
+
+      <!-- ── Google Gemini (Cloud) ─────────────────────────────────── -->
+      <div style="margin-top:18px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">Google Gemini</div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;margin-bottom:14px">
+          Best quality AI — rewrites the hero tagline, generates section subtitles, and polishes long headings after each Doc-to-Page run. Free for any Google account (1,500 req/day).
+        </div>
+
+        <a href="https://aistudio.google.com/apikey" target="_blank"
+           style="display:inline-flex;align-items:center;gap:8px;padding:9px 16px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;background:rgba(66,133,244,.12);color:#4285f4;border:1px solid rgba(66,133,244,.3);margin-bottom:14px;transition:opacity .15s"
+           onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
+          <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20H24v8h11.3C33.7 33.1 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C33.9 6.7 29.2 4.8 24 4.8 13.4 4.8 4.8 13.4 4.8 24S13.4 43.2 24 43.2c11 0 19.8-7.9 20.9-18.5.1-.9.1-1.8.1-2.7 0-.7 0-1.3-.1-2z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.5 16 18.9 12.8 24 12.8c3 0 5.7 1.1 7.8 2.9l5.7-5.7C33.9 6.7 29.2 4.8 24 4.8c-7.7 0-14.3 4.5-17.7 9.9z"/><path fill="#4CAF50" d="M24 43.2c5.1 0 9.8-1.9 13.3-5l-6.2-5.2C29.3 34.9 26.7 36 24 36c-5.3 0-9.7-3.4-11.3-8.2l-6.6 5C9.6 38.6 16.3 43.2 24 43.2z"/><path fill="#1976D2" d="M43.6 20H24v8h11.3c-.8 2.3-2.3 4.2-4.3 5.6l6.2 5.2C40.9 35.4 44 30.2 44 24c0-.7 0-1.4-.1-2-.1-.7-.1-1.3-.3-2z"/></svg>
+          Get free API key from Google →
+        </a>
+        <div class="form-hint" style="margin-bottom:12px">Sign in to Google AI Studio, click "Create API key", copy and paste below.</div>
+
+        <div class="form-group">
+          <label class="form-label">API Key</label>
+          <div style="display:flex;gap:8px">
+            <input class="form-input" id="input-gemini-api-key" type="password" placeholder="AIzaSy…" style="flex:1" autocomplete="off">
+            <button class="btn btn-ghost" id="btn-verify-gemini" style="white-space:nowrap">Verify</button>
+          </div>
+        </div>
+        <div id="gemini-verify-status" style="font-size:12px;color:var(--text-secondary);min-height:18px;margin-bottom:4px"></div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);margin:14px 0"></div>
 
       <!-- ── In-Browser AI ─────────────────────────────────────────── -->
       <div style="margin-top:18px">
@@ -640,10 +669,35 @@
 
     <!-- Step 2: Processing -->
     <div id="wizard-step-processing" style="display:none">
-      <h2>Building your page…</h2>
-      <div id="wizard-progress" class="wizard-progress" style="margin:20px 0"></div>
-      <div id="wizard-current-file" style="display:none"></div>
-      <div id="wizard-file-uploads" style="display:none"></div>
+      <div class="wiz-proc-hdr">
+        <h2 style="margin-bottom:2px">Building your page…</h2>
+        <p id="wiz-proc-sub" class="wiz-proc-sub"></p>
+      </div>
+      <div class="wiz-proc-body">
+        <div class="wiz-proc-left">
+          <div id="wizard-progress" class="wizard-progress"></div>
+        </div>
+        <div class="wiz-proc-right">
+          <div id="wiz-doc-card" class="wiz-doc-card" style="display:none">
+            <div class="wiz-doc-icon-wrap">
+              <span id="wiz-doc-emoji">📄</span>
+              <div class="wiz-scan-line"></div>
+            </div>
+            <div class="wiz-doc-meta">
+              <div id="wiz-doc-name" class="wiz-doc-name"></div>
+              <div id="wiz-doc-msg"  class="wiz-doc-msg"></div>
+            </div>
+          </div>
+          <div id="wiz-gallery" class="wiz-gallery" style="display:none">
+            <div class="wiz-gallery-hdr">Images found</div>
+            <div id="wiz-gallery-items" class="wiz-gallery-items"></div>
+          </div>
+          <div class="wiz-log-wrap">
+            <div id="wiz-log-lines"></div>
+            <span class="wiz-cursor"></span>
+          </div>
+        </div>
+      </div>
       <div id="wizard-retry" style="display:none;justify-content:flex-end;gap:8px;margin-top:12px">
         <button class="btn btn-ghost" id="wizard-back-btn">← Back</button>
         <button class="btn btn-primary" id="wizard-retry-btn">Retry</button>
@@ -652,10 +706,13 @@
 
     <!-- Step 3: Done -->
     <div id="wizard-step-done" style="display:none;text-align:center;padding:8px 0 16px">
-      <div style="font-size:36px;margin-bottom:12px">✓</div>
+      <div class="wiz-done-ring">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#1a7f2e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" class="wiz-check-path"/></svg>
+      </div>
       <h2 id="wizard-done-title" style="margin-bottom:6px">Page ready!</h2>
-      <p id="wizard-done-summary" style="color:var(--text-secondary);font-size:13px;margin-bottom:20px"></p>
-      <button class="btn btn-primary" id="wizard-view-btn">View Page →</button>
+      <p id="wizard-done-summary" style="color:var(--text-secondary);font-size:13px;margin-bottom:4px"></p>
+      <div id="wiz-done-stats" class="wiz-done-stats"></div>
+      <button class="btn btn-primary" id="wizard-view-btn" style="margin-top:16px">View Page →</button>
     </div>
 
   </div>
@@ -735,6 +792,44 @@
       <button class="btn btn-primary" id="btn-confirm-import">Import</button>
     </div>
   </div>
+</div>
+
+<!-- Rich text floating toolbar — lives in parent window, positioned over iframe selection -->
+<div id="wb-rich-toolbar">
+  <button class="wbr-btn" data-rtcmd="bold" title="Bold"><b>B</b></button>
+  <button class="wbr-btn" data-rtcmd="italic" title="Italic"><i>I</i></button>
+  <button class="wbr-btn" data-rtcmd="underline" title="Underline"><u>U</u></button>
+  <button class="wbr-btn" data-rtcmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+  <div class="wbr-sep"></div>
+  <div style="position:relative;display:flex;align-items:center">
+    <button id="wbr-color-swatch" title="Text color"></button>
+    <input type="color" id="wbr-color-input" value="#ffffff" tabindex="-1" style="position:absolute;opacity:0;width:0;height:0;pointer-events:none">
+  </div>
+  <div class="wbr-sep"></div>
+  <select class="wbr-select" id="wbr-font-select" title="Font family" style="max-width:90px">
+    <option value="">Font</option>
+    <option value="inherit">Default</option>
+    <option value="Arial,sans-serif">Arial</option>
+    <option value="Georgia,serif">Georgia</option>
+    <option value="'Times New Roman',serif">Times New Roman</option>
+    <option value="'Courier New',monospace">Courier New</option>
+    <option value="Verdana,sans-serif">Verdana</option>
+  </select>
+  <select class="wbr-select" id="wbr-size-select" title="Font size" style="width:56px">
+    <option value="">Size</option>
+    <option value="12px">12</option>
+    <option value="14px">14</option>
+    <option value="16px">16</option>
+    <option value="18px">18</option>
+    <option value="20px">20</option>
+    <option value="24px">24</option>
+    <option value="28px">28</option>
+    <option value="32px">32</option>
+    <option value="36px">36</option>
+    <option value="48px">48</option>
+  </select>
+  <div class="wbr-sep"></div>
+  <button class="wbr-btn" id="wbr-clear" title="Clear formatting" style="font-size:15px;font-weight:400">&#x2715;</button>
 </div>
 
 <script type="module" src="/src/main.ts"></script>

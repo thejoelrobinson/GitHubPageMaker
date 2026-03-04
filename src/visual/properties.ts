@@ -626,6 +626,8 @@ interface CssRuleEntry { selector: string; props: CssPropEntry[]; }
 
 let dmCssContent     = '';
 let dmCssPath: string | null = null;
+/** Page id that dmCssContent was loaded from when dmCssPath is null (inline CSS). */
+let dmCssPageId: string | null = null;
 let dmCssParsed: CssRuleEntry[] = [];
 let dmCssActiveRule: number | null = null;
 let dmCssTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1397,10 +1399,13 @@ function updateCssVariableInContent(css: string, varName: string, oldVal: string
 function syncVarTimer(): void {
   if (dmVarTimer) clearTimeout(dmVarTimer);
   dmVarTimer = setTimeout(() => {
-    if (!dmCssPath) return;
-    const tab = state.openTabs.find(t => t.path === dmCssPath);
-    if (tab) { tab.content = dmCssContent; tab.dirty = true; }
-    import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
+    if (dmCssPath) {
+      const tab = state.openTabs.find(t => t.path === dmCssPath);
+      if (tab) { tab.content = dmCssContent; tab.dirty = true; }
+      import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
+    } else if (visual.activePage) {
+      visual.activePage.customCss = dmCssContent;
+    }
     visual.dirty = true;
     coordinator.updateVisualSaveBtn?.();
   }, 500);
@@ -2502,10 +2507,13 @@ function applyCssPropChange(ri: number, pi: number, newVal: string, cssPanel: HT
   coordinator.dmSetCssLive?.(dmCssContent);
   if (dmCssTimer) clearTimeout(dmCssTimer);
   dmCssTimer = setTimeout(() => {
-    if (!dmCssPath) return;
-    const tab = state.openTabs.find(t => t.path === dmCssPath);
-    if (tab) { tab.content = dmCssContent; tab.dirty = true; }
-    import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
+    if (dmCssPath) {
+      const tab = state.openTabs.find(t => t.path === dmCssPath);
+      if (tab) { tab.content = dmCssContent; tab.dirty = true; }
+      import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, dmCssContent));
+    } else if (visual.activePage) {
+      visual.activePage.customCss = dmCssContent;
+    }
     visual.dirty = true;
     coordinator.updateVisualSaveBtn?.();
   }, 500);
@@ -2522,7 +2530,10 @@ function _renderSidebarCss(): void {
   if (cp) bindCssPanelEvents(cp, _renderSidebarCss);
   // Update filename in header
   const fname = _sidebarCssContainer.closest('#panel-css')?.querySelector<HTMLElement>('#css-panel-filename');
-  if (fname && dmCssPath) fname.textContent = dmCssPath.split('/').pop() ?? dmCssPath;
+  if (fname) {
+    if (dmCssPath) fname.textContent = dmCssPath.split('/').pop() ?? dmCssPath;
+    else if (dmCssContent) fname.textContent = 'Page Styles (inline)';
+  }
 }
 
 export async function initSidebarCssPanel(container: HTMLElement): Promise<void> {
@@ -2536,12 +2547,15 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
       dmCssParsed  = parseCss(restoredContent);
       dmCssVars    = parseCssVariables(restoredContent);
       coordinator.dmSetCssLive?.(restoredContent);
-      // Sync code tab
-      const tab = state.openTabs.find(t => t.path === dmCssPath);
-      if (tab) { tab.content = restoredContent; tab.dirty = true; }
-      import('../preview-sw-client').then(({ cacheFileInSW }) => {
-        if (dmCssPath) cacheFileInSW(dmCssPath, restoredContent);
-      });
+      // Sync code tab or page.customCss
+      if (dmCssPath) {
+        const tab = state.openTabs.find(t => t.path === dmCssPath);
+        if (tab) { tab.content = restoredContent; tab.dirty = true; }
+        import('../preview-sw-client').then(({ cacheFileInSW }) => cacheFileInSW(dmCssPath!, restoredContent));
+      } else if (visual.activePage) {
+        visual.activePage.customCss = restoredContent;
+        markVisualDirty();
+      }
       _renderSidebarCss();
     });
   });
@@ -2563,6 +2577,20 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
     return;
   }
 
+  // Already initialized with inline CSS — just re-render (don't discard panel edits)
+  // But if the user switched pages, the inline CSS belongs to a different page — re-load.
+  if (dmCssInitialized && dmCssContent && dmCssPath === null) {
+    if (dmCssPageId === visual.activePage?.id) {
+      _renderSidebarCss();
+      return;
+    }
+    // Page changed — reset so we fall through to first-load below
+    dmCssInitialized = false;
+    dmCssContent = '';
+    dmCssParsed = [];
+    dmCssVars = { light: [], dark: [], hasDarkMode: false, darkSelector: '' };
+  }
+
   // First load
   const prioritized = ['css/style.css', 'style.css', 'assets/css/style.css', 'css/main.css', 'main.css'];
   let path: string | null = null; let content = '';
@@ -2580,10 +2608,19 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
     }
   }
 
+  // No external CSS file found — check if the page has extracted inline CSS
+  if (!path) {
+    const pageCss = visual.activePage?.customCss;
+    if (pageCss !== undefined && pageCss.trim()) {
+      content = pageCss;
+      dmCssPageId = visual.activePage?.id ?? null;
+    }
+  }
+
   dmCssPath       = path;
   dmCssContent    = content;
-  dmCssParsed     = path ? parseCss(content) : [];
-  dmCssVars       = path ? parseCssVariables(content) : { light: [], dark: [], hasDarkMode: false, darkSelector: '' };
+  dmCssParsed     = content ? parseCss(content) : [];
+  dmCssVars       = content ? parseCssVariables(content) : { light: [], dark: [], hasDarkMode: false, darkSelector: '' };
   // Reset navigation state for a fresh file load
   dmCssActiveRule = null;
   dmCssPanelView  = 'rules';
@@ -2597,4 +2634,20 @@ export async function initSidebarCssPanel(container: HTMLElement): Promise<void>
 
 export function registerPropertiesCallbacks(): void {
   coordinator.renderProperties = renderProperties;
+}
+
+/**
+ * Reset the CSS panel state so it re-initialises on next open.
+ * Call after page conversion so the panel picks up freshly-extracted customCss
+ * instead of returning early on the "already initialised" path.
+ */
+export function resetCssPanel(): void {
+  dmCssInitialized = false;
+  dmCssContent     = '';
+  dmCssPath        = null;
+  dmCssPageId      = null;
+  dmCssParsed      = [];
+  dmCssActiveRule  = null;
+  dmCssPanelView   = 'rules';
+  dmCssVarsDark    = false;
 }

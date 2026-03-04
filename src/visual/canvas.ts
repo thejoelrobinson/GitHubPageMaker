@@ -20,6 +20,10 @@ export const getDmSelected = (): SelectedElement | null => dmSelected;
 
 let inspectModeActive = false;
 let interactModeActive = false;
+/** Last [data-field] element clicked in the iframe — used to re-focus before sending commands. */
+let _richFocusedField: HTMLElement | null = null;
+/** Saved selection Range from the iframe — restored before sending commands so execCommand has a selection. */
+let _richSelectionRange: Range | null = null;
 export const getInspectMode  = (): boolean => inspectModeActive;
 export const getInteractMode = (): boolean => interactModeActive;
 
@@ -37,6 +41,12 @@ export function setInteractMode(active: boolean): void {
   document.getElementById('tool-edit')?.classList.toggle('active', active);
   if (!active) {
     getIframe()?.contentWindow?.postMessage({ type: 'wb:setInspectMode', active: inspectModeActive }, '*');
+  }
+  // Hide rich toolbar when entering preview/interact mode
+  if (active) {
+    document.getElementById('wb-rich-toolbar')?.classList.remove('wb-rt-show');
+    _richFocusedField = null;
+    _richSelectionRange = null;
   }
 }
 import { renderBlock, BLOCK_DEFS } from './blocks';
@@ -97,6 +107,10 @@ export function renderCanvas(afterLoad?: () => void): void {
 
   dmSections = [];
   dmSelected = null;
+  // Clear stale toolbar state — the iframe will reload with new DOM
+  document.getElementById('wb-rich-toolbar')?.classList.remove('wb-rt-show');
+  _richFocusedField = null;
+  _richSelectionRange = null;
 
   const page = visual.activePage;
 
@@ -141,10 +155,24 @@ function renderRawPage(iframe: HTMLIFrameElement, pagePath: string, afterLoad?: 
   // The primary tab for this page (used for banner logic and fallback)
   const codeTab = state.openTabs.find(t => t.path === pagePath);
 
-  if (isPreviewSWReady()) {
+  // For rawHtml pages (AI-generated, not yet on GitHub): cacheFileInSW is a
+  // postMessage and is processed asynchronously. Setting iframe.src immediately
+  // after would race the SW fetch — the SW would find the file missing and return
+  // the "Loading repository assets…" placeholder forever.
+  // Fix: bypass the SW entirely and render via srcdoc; keep the cache warm for
+  // when the user switches to Code mode.
+  const rawHtml = visual.activePage?.path === pagePath ? (visual.activePage.rawHtml ?? '') : '';
+  if (rawHtml && !codeTab) {
+    cacheFileInSW(pagePath, rawHtml);
+    renderRawPageFallback(iframe, pagePath, rawHtml);
+    return;
+  }
+
+  if (isPreviewSWReady() && state.connected) {
     // SERVICE WORKER PATH — the SW serves every asset with correct MIME types.
-    // The debounced cache update in code-editor.ts keeps the SW in sync as the
-    // user types, so by the time they switch modes the cache is already current.
+    // Requires a GitHub connection: the SW fetches on-demand from the GitHub API.
+    // When not connected there are no credentials so the SW would return the
+    // "Loading repository assets…" placeholder — use srcdoc fallback instead.
     showCodeEditBanner(!!codeTab); // show banner when code edits are active
     const previewUrl = `/preview/${pagePath}?_wb=${Date.now()}`;
     iframe.removeAttribute('srcdoc');
@@ -154,7 +182,7 @@ function renderRawPage(iframe: HTMLIFrameElement, pagePath: string, afterLoad?: 
     };
     iframe.src = previewUrl;
   } else {
-    // FALLBACK — SW not available; render via srcdoc with CSS inlining
+    // FALLBACK — SW not available; render via srcdoc using code-tab content.
     renderRawPageFallback(iframe, pagePath, codeTab?.content ?? '');
   }
 }
@@ -195,12 +223,14 @@ function injectEditingLayerIntoSW(iframe: HTMLIFrameElement): void {
       iDoc.head.appendChild(style);
     }
 
-    // 2. Toolbar HTML — must be in DOM before the script runs
+    // 2. Toolbar HTML — must be in DOM before the script runs.
+    // Insert ALL sibling elements from EDITING_TOOLBAR_HTML (wb-toolbar + wb-rich-toolbar).
     if (!iDoc.getElementById('wb-toolbar')) {
       const tmp = iDoc.createElement('div');
       tmp.innerHTML = EDITING_TOOLBAR_HTML;
-      const toolbar = tmp.firstElementChild;
-      if (toolbar) iDoc.body.insertBefore(toolbar, iDoc.body.firstChild);
+      const frag = iDoc.createDocumentFragment();
+      while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+      iDoc.body.insertBefore(frag, iDoc.body.firstChild);
     }
 
     // 3. Editing script — runs last so toolbar is guaranteed to be present
@@ -223,6 +253,16 @@ function renderRawPageFallback(
   rawHtml: string,
 ): void {
   if (!rawHtml) {
+    // Only fetch from GitHub if the file actually exists in the repo tree.
+    // Brand-new pages (not yet pushed) would 404 or trigger the SW's
+    // "Loading repository assets…" loop — show an empty-canvas placeholder instead.
+    const existsInRepo = state.connected && state.tree.some(f => f.path === pagePath);
+    if (!existsInRepo) {
+      iframe.removeAttribute('src');
+      iframe.srcdoc = `<!DOCTYPE html><html><body style="background:#141416;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui;color:#606070;flex-direction:column;gap:12px;text-align:center;padding:40px"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg><span style="font-size:13px">Empty page — add a section to get started</span></body></html>`;
+      iframe.onload = null;
+      return;
+    }
     iframe.removeAttribute('src');
     iframe.srcdoc = LOADING_HTML;
     iframe.onload = null;
@@ -315,16 +355,70 @@ function renderBlockPage(iframe: HTMLIFrameElement, page: Page, afterLoad?: () =
       });
 
       // Direct parent-side click handler for block selection.
-      // Belt-and-suspenders over the postMessage path: the same-origin
-      // contentDocument listener fires synchronously, guaranteeing the
-      // correct block is selected the instant the user clicks regardless
-      // of any postMessage timing or interactModeActive race conditions.
       iDoc.addEventListener('mousedown', (e: MouseEvent) => {
         if (interactModeActive) return;
         const target = e.target as Element | null;
         if (target?.closest('.wb-controls, .wb-add')) return;
         const block = target?.closest('[data-block-id]');
         if (block) selectBlock(block.getAttribute('data-block-id')!);
+      });
+
+      // ── Rich toolbar: triggered directly from the parent via same-origin DOM ──
+      // This bypasses the entire postMessage chain so it works regardless of
+      // whether the embedded editing script is running or cached correctly.
+      iDoc.addEventListener('click', (e: MouseEvent) => {
+        if (interactModeActive) return;
+        const field = (e.target as Element).closest('[data-field]') as HTMLElement | null;
+        if (!field) return;
+        _richFocusedField = field;
+        const ifr = getIframe();
+        if (!ifr) return;
+        // Defer: let the iframe's own click handler finish caret placement first,
+        // then read the real selection state and position the toolbar.
+        setTimeout(() => {
+          if (interactModeActive) return;
+          const ifrRect = ifr.getBoundingClientRect();
+          const fRect   = field.getBoundingClientRect();
+          const ifrWin  = iDoc.defaultView as Window;
+          const sel     = ifrWin.getSelection();
+          // Save the current range (even if collapsed — restores cursor position)
+          _richSelectionRange = sel && sel.rangeCount > 0
+            ? sel.getRangeAt(0).cloneRange()
+            : null;
+          positionRichToolbar(
+            ifrRect.left + fRect.left,
+            ifrRect.top  + fRect.top,
+            fRect.width,
+            0,
+          );
+          refreshRichToolbarState();
+        }, 0);
+      });
+
+      iDoc.addEventListener('selectionchange', () => {
+        if (interactModeActive) return;
+        const ifrWin = iDoc.defaultView as Window;
+        const sel    = ifrWin.getSelection();
+        if (!sel) return;
+        // Always update saved range (cursor or selection)
+        _richSelectionRange = sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+        if (sel.isCollapsed || !sel.rangeCount) return;
+        const anchor = sel.anchorNode;
+        const node   = anchor?.nodeType === 1 ? anchor as Element : (anchor?.parentNode as Element | null);
+        if (!node?.closest?.('[data-field]')) return;
+        const ifr = getIframe();
+        if (!ifr) return;
+        const ifrRect = ifr.getBoundingClientRect();
+        const rng     = sel.getRangeAt(0).getBoundingClientRect();
+        if (rng.width || rng.height) {
+          positionRichToolbar(
+            ifrRect.left + rng.left,
+            ifrRect.top  + rng.top,
+            rng.width,
+            rng.height,
+          );
+          refreshRichToolbarState();
+        }
       });
     }
   };
@@ -692,7 +786,7 @@ function syncCodeTab(path: string): void {
 // ── Save button ────────────────────────────────────────────────────────
 
 export function updateVisualSaveBtn(): void {
-  const btn = document.getElementById('vis-publish-btn') as HTMLButtonElement | null;
+  const btn = document.getElementById('action-push-btn') as HTMLButtonElement | null;
   const dirty = visual.dirty || visual.pages.some(p => p.dirty);
   btn?.classList.toggle('has-changes', dirty);
 }
@@ -700,8 +794,137 @@ export function updateVisualSaveBtn(): void {
 // ── postMessage listener ───────────────────────────────────────────────
 let _msgHandler: ((e: MessageEvent) => void) | null = null;
 
+/** Show and position the rich toolbar in the parent window.
+ *  x/y are the left/top of the selection or field in parent-window coords.
+ *  w/h are the width/height of the selection (0 for a simple cursor click). */
+export function positionRichToolbar(x: number, y: number, w: number, _h: number): void {
+  const tb = document.getElementById('wb-rich-toolbar');
+  if (!tb) return;
+  tb.style.visibility = 'hidden';
+  tb.classList.add('wb-rt-show');
+  const tbW = tb.offsetWidth || 240;
+  tb.style.visibility = '';
+  const cx   = x + w / 2;
+  const top  = Math.max(4, y - 44);
+  const left = Math.max(tbW / 2 + 4, Math.min(window.innerWidth - tbW / 2 - 4, cx));
+  tb.style.left = left + 'px';
+  tb.style.top  = top  + 'px';
+}
+
+function initRichToolbar(): void {
+  const tb = document.getElementById('wb-rich-toolbar');
+  if (!tb || tb.dataset.wbRtInit) return;
+  tb.dataset.wbRtInit = '1';
+
+  // Re-focus the saved iframe field AND restore the saved selection Range,
+  // then send the command.  Clicking a parent toolbar button steals focus
+  // from the iframe and clears the selection; both must be restored so that
+  // execCommand / applySpanStyle have a live selection to act on.
+  const refocusAndSend = (msg: Record<string, unknown>) => {
+    const iframeWin = getIframe()?.contentWindow;
+    if (!iframeWin) return;
+    if (_richFocusedField) {
+      _richFocusedField.focus();
+      if (_richSelectionRange) {
+        try {
+          const sel = iframeWin.getSelection();
+          if (sel) {
+            sel.removeAllRanges();
+            sel.addRange(_richSelectionRange.cloneRange());
+          }
+        } catch { /* ignore — addRange may throw on detached ranges */ }
+      }
+    }
+    iframeWin.postMessage(msg, '*');
+  };
+
+  // B / I / U / S
+  tb.addEventListener('mousedown', (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (!target.matches('input, select')) e.preventDefault();
+    const btn = target.closest('[data-rtcmd]') as HTMLElement | null;
+    if (btn) refocusAndSend({ type: 'wb:richCmd', cmd: btn.dataset.rtcmd });
+  });
+
+  // Color swatch → open native color picker
+  const swatch = document.getElementById('wbr-color-swatch') as HTMLButtonElement | null;
+  const colorInput = document.getElementById('wbr-color-input') as HTMLInputElement | null;
+  swatch?.addEventListener('mousedown', e => e.preventDefault());
+  swatch?.addEventListener('click', e => { e.preventDefault(); colorInput?.click(); });
+  colorInput?.addEventListener('input', () => {
+    if (!colorInput.value) return;
+    refocusAndSend({ type: 'wb:richCmd', cmd: 'foreColor', value: colorInput.value });
+    if (swatch) swatch.style.background = colorInput.value;
+  });
+
+  // Font family
+  const fontSel = document.getElementById('wbr-font-select') as HTMLSelectElement | null;
+  fontSel?.addEventListener('change', () => {
+    if (fontSel.value) refocusAndSend({ type: 'wb:richCmd', cmd: 'fontFamily', value: fontSel.value });
+    fontSel.value = '';
+  });
+
+  // Font size
+  const sizeSel = document.getElementById('wbr-size-select') as HTMLSelectElement | null;
+  sizeSel?.addEventListener('change', () => {
+    if (sizeSel.value) refocusAndSend({ type: 'wb:richCmd', cmd: 'fontSize', value: sizeSel.value });
+    sizeSel.value = '';
+  });
+
+  // Clear formatting
+  const clearBtn = document.getElementById('wbr-clear');
+  clearBtn?.addEventListener('mousedown', e => {
+    e.preventDefault();
+    refocusAndSend({ type: 'wb:richCmd', cmd: 'removeFormat' });
+  });
+
+  // Hide when clicking anywhere outside the iframe or toolbar
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    const target = e.target as Element;
+    if (tb.contains(target)) return;
+    const ifr = getIframe();
+    if (ifr && (ifr.contains(target) || ifr === target)) return;
+    tb.classList.remove('wb-rt-show');
+    _richFocusedField = null;
+    _richSelectionRange = null;
+  });
+}
+
+/** Read formatting state from the iframe and update toolbar indicators.
+ *  Called whenever the toolbar is shown or the selection changes. */
+function refreshRichToolbarState(): void {
+  const tb   = document.getElementById('wb-rich-toolbar');
+  const iDoc = getIframe()?.contentDocument;
+  if (!tb || !iDoc) return;
+
+  // Bold / italic / underline / strikethrough active states
+  (['bold', 'italic', 'underline', 'strikeThrough'] as const).forEach(cmd => {
+    try {
+      tb.querySelector(`[data-rtcmd="${cmd}"]`)
+        ?.classList.toggle('active', iDoc.queryCommandState(cmd));
+    } catch { /* queryCommandState may throw in some browsers */ }
+  });
+
+  // Current foreground colour → update swatch + hidden input
+  try {
+    const raw = iDoc.queryCommandValue('foreColor');
+    if (raw) {
+      const m = raw.match(/\d+/g);
+      if (m && m.length >= 3) {
+        const hex = '#' + [m[0], m[1], m[2]]
+          .map(v => Number(v).toString(16).padStart(2, '0')).join('');
+        const sw = document.getElementById('wbr-color-swatch') as HTMLElement | null;
+        const ci = document.getElementById('wbr-color-input')  as HTMLInputElement | null;
+        if (sw) sw.style.background = hex;
+        if (ci) ci.value = hex;
+      }
+    }
+  } catch { /* ignore */ }
+}
+
 export function initCanvasEvents(): void {
   if (_msgHandler) window.removeEventListener('message', _msgHandler);
+  initRichToolbar();
 
   _msgHandler = (e: MessageEvent) => {
     const { data } = e;
@@ -714,6 +937,22 @@ export function initCanvasEvents(): void {
       case 'wb:deselect':
         if (!interactModeActive) deselectBlock();
         break;
+      case 'wb:richSel': {
+        const tb = document.getElementById('wb-rich-toolbar');
+        if (!tb) break;
+        if (!data.active) { tb.classList.remove('wb-rt-show'); break; }
+        const ifr = getIframe();
+        if (!ifr) break;
+        const fr = ifr.getBoundingClientRect();
+        const rect = data.rect as { top: number; left: number; width: number; height: number };
+        positionRichToolbar(fr.left + rect.left, fr.top + rect.top, rect.width, rect.height);
+        // Update B/I/U/S active states
+        (['bold', 'italic', 'underline', 'strikeThrough'] as const).forEach(cmd => {
+          tb.querySelector(`[data-rtcmd="${cmd}"]`)
+            ?.classList.toggle('active', !!(data as Record<string, unknown>)[cmd]);
+        });
+        break;
+      }
       case 'wb:textSave': {
         const blockId = data.blockId as string;
         const field   = data.field   as string;

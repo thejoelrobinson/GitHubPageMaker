@@ -17,7 +17,7 @@ import {
   exposeNavLinkGlobals, selectBlock, setInspectMode, setInteractMode, getInteractMode, initCanvasDragDrop,
   registerCanvasCallbacks,
 } from './canvas';
-import { initSidebarCssPanel, registerPropertiesCallbacks } from './properties';
+import { initSidebarCssPanel, registerPropertiesCallbacks, resetCssPanel } from './properties';
 import { renderProperties } from './properties';
 import { coordinator } from './visual-coordinator';
 import { initTemplateGallery, initPreviewButton, showSetupWizard } from './templates';
@@ -84,8 +84,10 @@ export async function enterVisualMode(): Promise<void> {
   setInteractMode(false);
   setInspectMode(true);
 
-  // Always show save/publish buttons — publish will prompt for GitHub if needed
-  document.getElementById('vis-action-group')!.style.display = 'flex';
+  // Always show action buttons — push will prompt for GitHub if not connected
+  document.getElementById('action-group')!.style.display = 'flex';
+  const pushBtn = document.getElementById('action-push-btn') as HTMLElement | null;
+  if (pushBtn) pushBtn.style.display = '';
   // Status bar: hide code-specific items in visual mode
   document.querySelectorAll('.status-code-only').forEach(el => el.classList.add('hidden'));
 
@@ -161,7 +163,7 @@ export function enterCodeMode(): void {
   //
   // For raw-HTML pages (no blocks) we preserve whatever the user typed in
   // the code editor.
-  if (visual.activePage && state.connected) {
+  if (visual.activePage) {
     const page = visual.activePage;
 
     if (page.blocks.length > 0) {
@@ -183,13 +185,16 @@ export function enterCodeMode(): void {
   (document.getElementById('vis-sidebar-footer') as HTMLElement).style.display = 'none';
   if (state.connected) {
     (document.getElementById('code-mode-tools') as HTMLElement).style.display = 'flex';
-    (document.getElementById('code-action-group') as HTMLElement).style.display = 'flex';
   }
+  // Always show action buttons; hide push when not connected to GitHub
+  (document.getElementById('action-group') as HTMLElement).style.display = 'flex';
+  const pushBtn = document.getElementById('action-push-btn') as HTMLElement | null;
+  if (pushBtn) pushBtn.style.display = state.connected ? '' : 'none';
   switchSidebarPanel('explorer');
 
   document.getElementById('mode-code-btn')?.classList.add('active');
   document.getElementById('mode-vis-btn')?.classList.remove('active');
-  document.getElementById('vis-action-group')!.style.display = 'none';
+  // action-group stays visible across modes — enterCodeMode manages it above
   // Status bar: show code-specific items in code mode
   document.querySelectorAll('.status-code-only').forEach(el => el.classList.remove('hidden'));
 
@@ -410,8 +415,8 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
     if (!ok) return;
   }
 
-  // Get the HTML — from the open code tab or fetch from GitHub
-  let html = state.openTabs.find(t => t.path === page.path)?.content ?? '';
+  // Get the HTML — rawHtml (AI-generated), then open code tab, then fetch from GitHub
+  let html = page.rawHtml ?? state.openTabs.find(t => t.path === page.path)?.content ?? '';
   if (!html && state.connected) {
     try {
       const file = await readFile(page.path);
@@ -426,7 +431,7 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
 
   if (!html.trim()) { notify('Page HTML is empty', 'warning'); return; }
 
-  const { blocks, preservedHead } = parseHtmlToBlocks(html);
+  const { blocks, preservedHead, inlineCss } = parseHtmlToBlocks(html);
 
   if (!blocks.length) {
     notify('No sections detected — try editing the HTML first', 'warning');
@@ -435,7 +440,9 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
 
   // Apply the conversion
   page.blocks        = blocks;
-  page.preservedHead = preservedHead;
+  page.preservedHead = preservedHead;   // clean head (no inline <style>)
+  page.customCss     = inlineCss || undefined;
+  page.rawHtml       = undefined;        // page is now block-based
   markVisualDirty();
 
   import('./canvas').then(({ updateVisualSaveBtn, renderCanvas, syncActivePageCodeTab }) => {
@@ -446,7 +453,17 @@ export async function convertCurrentPageToBlocks(): Promise<void> {
   import('./pages').then(({ renderSectionList }) => renderSectionList());
   import('./properties').then(({ renderProperties }) => renderProperties());
 
-  notify(`Converted to ${blocks.length} visual sections — click any section to edit`, 'success');
+  // If CSS was extracted, reset the CSS panel so it re-initialises with the
+  // new customCss on next open, then auto-open it so the user can see their styles.
+  if (inlineCss) {
+    resetCssPanel();
+    switchSidebarPanel('css');
+    const container = document.getElementById('css-panel-body');
+    if (container) void initSidebarCssPanel(container);
+  }
+
+  const cssNote = inlineCss ? ' Styles extracted — see CSS panel.' : '';
+  notify(`Converted to ${blocks.length} visual sections — click any section to edit.${cssNote}`, 'success');
 }
 
 // ── Device buttons (registered once) ─────────────────────────────────

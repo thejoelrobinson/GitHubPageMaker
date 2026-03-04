@@ -23,6 +23,24 @@ export function renderInlineMarkdown(str: unknown): string {
     .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');          // *italic*
 }
 
+/**
+ * Render a text field for display in blocks.
+ * If content contains HTML formatting tags (stored by the rich text toolbar),
+ * pass through with light sanitization. Otherwise, use markdown rendering.
+ * Backward-compatible: existing markdown content continues to work.
+ */
+export function renderTextField(value: unknown): string {
+  const str = String(value ?? '');
+  if (/<(strong|em|span[\s>]|u\b|del\b|br[\s/])/.test(str)) {
+    return str
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+      .replace(/javascript:/gi, '')
+      .replace(/ on\w+="[^"]*"/gi, '');
+  }
+  return renderInlineMarkdown(str);
+}
+
 /** Escape a value for use inside an HTML attribute (handles both quote styles). */
 export function escapeAttr(str: unknown): string {
   return String(str)

@@ -10,7 +10,7 @@ import { cacheTreeShas } from './utils';
 import { notify } from './ui/notifications';
 import {
   initMonaco, refreshTree,
-  collapseAll, openCommitModal, pushChanges, searchFiles, pullRepo,
+  collapseAll, openCommitModal, pushChanges, searchFiles, pullRepo, newFile,
 } from './code-editor';
 import {
   enterVisualMode, enterCodeMode,
@@ -29,6 +29,7 @@ import { openBranchPicker, renderBranchList } from './branch-picker';
 import { closeModal, switchModalTab, openSettings } from './modal';
 import { detectOllama } from './visual/llm-validator';
 import { initBrowserLLM, resetBrowserLLM, DEFAULT_BROWSER_MODEL, type BrowserLLMProgress } from './visual/browser-llm';
+import { verifyGeminiKey } from './visual/cloud-llm';
 import { updateAiChip } from './visual/asset-wizard';
 
 // ── Panel switching — delegates to the shared switchSidebarPanel ───────
@@ -52,6 +53,7 @@ async function init(): Promise<void> {
     state.ollamaEnabled  = cfg.ollamaEnabled  ?? false;
     state.ollamaEndpoint = cfg.ollamaEndpoint ?? 'http://localhost:11434';
     state.ollamaModel    = cfg.ollamaModel    ?? 'llama3.2:3b';
+    state.geminiApiKey = cfg.geminiApiKey ?? '';
     try {
       const { entries: treeEntries, truncated: treeT } = await fetchTree();
       state.tree = treeEntries.filter(f => f.type === 'blob');
@@ -82,6 +84,7 @@ async function init(): Promise<void> {
     state.ollamaModel       = aiCfg.ollamaModel;
     state.browserLLMEnabled = aiCfg.browserLLMEnabled;
     state.browserLLMModel   = aiCfg.browserLLMModel;
+    state.geminiApiKey = aiCfg.geminiApiKey;
 
     // Check for a local draft from a previous no-GitHub session
     const localDraft = loadLocalDraft();
@@ -110,20 +113,35 @@ function bindEventListeners(): void {
 
   document.getElementById('btn-save-ai-settings')?.addEventListener('click', () => {
     const prevModel = state.browserLLMModel;
+    // Gemini
+    state.geminiApiKey = (document.getElementById('input-gemini-api-key') as HTMLInputElement).value.trim();
+    // Browser LLM
     state.browserLLMEnabled = (document.getElementById('input-browser-llm-enabled') as HTMLInputElement).checked;
     state.browserLLMModel   = (document.getElementById('input-browser-llm-model')   as HTMLSelectElement).value || DEFAULT_BROWSER_MODEL;
+    // Ollama
     state.ollamaEnabled  = (document.getElementById('input-ollama-enabled')  as HTMLInputElement).checked;
     state.ollamaEndpoint = (document.getElementById('input-ollama-endpoint') as HTMLInputElement).value.trim() || 'http://localhost:11434';
     state.ollamaModel    = (document.getElementById('input-ollama-model')    as HTMLInputElement).value.trim() || 'llama3.2:3b';
     saveConfig();
     closeModal('settings-modal');
     notify('AI settings saved', 'success');
-    // Re-download if browser LLM is now enabled or model changed
+    updateAiChip();
+    // Re-download browser LLM if model changed
     if (state.browserLLMEnabled) {
       if (state.browserLLMModel !== prevModel) resetBrowserLLM();
       initBrowserLLM(state.browserLLMModel, updateAIModelStatus)
         .catch(() => { /* handled */ });
     }
+  });
+
+  document.getElementById('btn-verify-gemini')?.addEventListener('click', async () => {
+    const key      = (document.getElementById('input-gemini-api-key') as HTMLInputElement).value.trim();
+    const statusEl = document.getElementById('gemini-verify-status');
+    if (!key) { if (statusEl) statusEl.textContent = 'Paste your API key first'; return; }
+    if (statusEl) statusEl.textContent = 'Verifying…';
+    const result = await verifyGeminiKey(key);
+    if (statusEl) statusEl.textContent = result.message;
+    if (result.ok) updateAiChip();
   });
 
   document.getElementById('btn-test-ollama')?.addEventListener('click', async () => {
@@ -162,10 +180,14 @@ function bindEventListeners(): void {
 
   // Titlebar action buttons
   document.getElementById('pull-btn')?.addEventListener('click', pullRepo);
-  document.getElementById('save-btn')?.addEventListener('click', openCommitModal);
-  document.getElementById('code-save-btn')?.addEventListener('click', performLocalSave);
-  document.getElementById('vis-save-btn')?.addEventListener('click', performLocalSave);
-  document.getElementById('vis-publish-btn')?.addEventListener('click', openVisualCommitModal);
+  document.getElementById('action-download-btn')?.addEventListener('click', () => {
+    import('./download').then(m => m.downloadSiteZip());
+  });
+  document.getElementById('action-save-btn')?.addEventListener('click', performLocalSave);
+  document.getElementById('action-push-btn')?.addEventListener('click', () => {
+    if (visual.mode === 'code') openCommitModal();
+    else openVisualCommitModal();
+  });
   document.getElementById('branch-badge')?.addEventListener('click', openBranchPicker);
   document.getElementById('status-branch')?.addEventListener('click', openBranchPicker);
 
@@ -229,6 +251,9 @@ function bindEventListeners(): void {
       revertToBlocks();
     }
   });
+
+  // New file (code mode)
+  document.getElementById('btn-new-file')?.addEventListener('click', newFile);
 
   // File import
   document.getElementById('btn-import-files')?.addEventListener('click', () => {

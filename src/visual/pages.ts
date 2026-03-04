@@ -103,8 +103,10 @@ export function switchPage(id: string): void {
 
   // Lazy-load the HTML for this page if it has no blocks and no code tab yet.
   // Handles pages beyond the first 5 preloaded by initFromExistingRepo().
+  // Skip for rawHtml pages (AI-generated) — they haven't been pushed to GitHub yet.
   const needsLoad =
     page.blocks.length === 0 &&
+    !page.rawHtml &&
     state.connected &&
     !state.openTabs.find(t => t.path === page.path);
 
@@ -203,7 +205,11 @@ export function renderPageList(): void {
   renderPageActions();
 
   if (!visual.pages.length) {
-    container.innerHTML = '<div class="pl-empty">No pages yet</div>';
+    container.innerHTML = `<div class="pl-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" width="28" height="28" style="opacity:.3;margin-bottom:4px"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z"/></svg>
+      <span style="font-weight:600;color:var(--text-secondary);font-size:12px">No pages yet</span>
+      <span style="font-size:11px">Add a page to start building</span>
+    </div>`;
     return;
   }
 
@@ -305,16 +311,22 @@ export function renderSectionList(): void {
   const page = visual.activePage;
   if (!page) { container.innerHTML = '<div class="sl-empty">No page selected</div>'; return; }
   if (!page.blocks.length) {
+    // Design mode: always show the convert banner above the section list
+    const convertBanner = `<div class="sl-convert-banner">
+      <span>Design Mode — raw HTML</span>
+      <button onclick="window._convertPageToBlocks()" class="btn-convert-blocks">Convert to editable blocks</button>
+    </div>`;
+
     // Design mode: populate from live DOM sections sent by the iframe
     import('./canvas').then(({ getDmSections, getDmSelected }) => {
       const sections = getDmSections();
       const selected = getDmSelected();
       if (!sections.length) {
-        container.innerHTML = '<div class="sl-empty">Loading sections…</div>';
+        container.innerHTML = convertBanner + '<div class="sl-empty">Loading sections…</div>';
         return;
       }
       const trashSvg = `<svg viewBox="0 0 16 16" fill="currentColor" width="11"><path d="M11 1.75V3h2.25a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1 0-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75ZM4.496 6.559a.75.75 0 1 0-1.492.142l.94 9.48A1.75 1.75 0 0 0 5.688 17.5h4.624a1.75 1.75 0 0 0 1.744-1.319l.94-9.48a.75.75 0 0 0-1.492-.142l-.94 9.48a.25.25 0 0 1-.249.188H5.688a.25.25 0 0 1-.249-.188l-.943-9.479Z"/></svg>`;
-      container.innerHTML = sections.map((sec, i) => {
+      container.innerHTML = convertBanner + sections.map((sec, i) => {
         const isActive = selected?.sectionIndex === sec.index;
         const esc = escapeHtml(sec.selector);
         return `<div class="sl-item${isActive ? ' active' : ''} dm-section-item"

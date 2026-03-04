@@ -17,6 +17,7 @@ export const state: AppState = {
   ollamaModel:      'llama3.2:3b',
   browserLLMEnabled: true,
   browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
+  geminiApiKey: '',
 };
 
 // ── Visual editor state ───────────────────────────────────────────────
@@ -79,6 +80,7 @@ export function saveConfig(): void {
     ollamaModel:       state.ollamaModel,
     browserLLMEnabled: state.browserLLMEnabled,
     browserLLMModel:   state.browserLLMModel,
+    geminiApiKey: state.geminiApiKey,
   }));
 }
 
@@ -98,16 +100,18 @@ export function loadConfig(): AppConfig | null {
         ollamaModel:        cfg.ollamaModel        ?? 'llama3.2:3b',
         browserLLMEnabled:  cfg.browserLLMEnabled  ?? true,
         browserLLMModel:    cfg.browserLLMModel    ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+        geminiApiKey: cfg.geminiApiKey ?? '',
       };
     }
   } catch { /* ignore */ }
   return null;
 }
 
-/** Load AI settings (Ollama + browser LLM) — safe to call even when no GitHub config exists. */
+/** Load AI settings (Ollama + browser LLM + Gemini) — safe to call even when no GitHub config exists. */
 export function loadAISettings(): {
   ollamaEnabled: boolean; ollamaEndpoint: string; ollamaModel: string;
   browserLLMEnabled: boolean; browserLLMModel: string;
+  geminiApiKey: string;
 } {
   const defaults = {
     ollamaEnabled:    false,
@@ -115,6 +119,7 @@ export function loadAISettings(): {
     ollamaModel:      'llama3.2:3b',
     browserLLMEnabled: true,
     browserLLMModel:   'onnx-community/Qwen2.5-0.5B-Instruct',
+    geminiApiKey: '',
   };
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
@@ -126,6 +131,7 @@ export function loadAISettings(): {
       ollamaModel:      cfg.ollamaModel      ?? 'llama3.2:3b',
       browserLLMEnabled: cfg.browserLLMEnabled ?? true,
       browserLLMModel:   cfg.browserLLMModel   ?? 'onnx-community/Qwen2.5-0.5B-Instruct',
+      geminiApiKey: cfg.geminiApiKey ?? '',
     };
   } catch { return defaults; }
 }

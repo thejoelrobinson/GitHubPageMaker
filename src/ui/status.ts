@@ -14,7 +14,7 @@ export function updateStatusLang(lang: string): void {
 
 export function updateSaveButton(openTabs: { dirty: boolean }[]): void {
   const dirty = openTabs.filter(t => t.dirty);
-  const btn  = document.getElementById('save-btn') as HTMLButtonElement | null;
+  const btn  = document.getElementById('action-push-btn') as HTMLButtonElement | null;
   const stat = document.getElementById('status-changes');
   if (btn) btn.classList.toggle('has-changes', dirty.length > 0);
   if (stat) stat.textContent = dirty.length > 0 ? `${dirty.length} unsaved` : 'No changes';

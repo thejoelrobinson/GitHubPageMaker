@@ -178,7 +178,7 @@ export async function clearBranchCache(
 
 const MAX_CONCURRENT = 8;
 
-async function withConcurrencyLimit<T>(
+export async function withConcurrencyLimit<T>(
   tasks: Array<() => Promise<T>>,
   limit: number,
 ): Promise<PromiseSettledResult<T>[]> {
