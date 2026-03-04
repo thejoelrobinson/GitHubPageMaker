@@ -91,7 +91,7 @@ async function _doInit(model: string, onProgress?: ProgressCallback): Promise<vo
 
   try {
     _engine = await pipeline('text-generation', model, {
-      dtype:  'q4',
+      dtype:  { webgpu: 'q4f16', wasm: 'q4' },
       device: 'auto',  // WebGPU when available, WASM otherwise
       progress_callback: (raw: unknown) => {
         const p = raw as { status: string; progress?: number; file?: string };
